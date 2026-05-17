@@ -14,7 +14,18 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.swimsy.app",
+      "infoPlist": {
+        "NSHealthShareUsageDescription": "Swimsy reads your swim workouts, heart rate, and recovery data to track your training.",
+        "NSHealthUpdateUsageDescription": "Swimsy does not write any health data.",
+        "NSCameraUsageDescription": "Swimsy uses the camera to photograph swim workouts for auto-parsing.",
+        "NSPhotoLibraryUsageDescription": "Swimsy accesses your photos to import swim workout images."
+      },
+      "entitlements": {
+        "com.apple.developer.healthkit": true,
+        "com.apple.developer.healthkit.background-delivery": true
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -30,7 +41,8 @@
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      "@react-native-community/datetimepicker"
     ],
     "experiments": {
       "typedRoutes": true
