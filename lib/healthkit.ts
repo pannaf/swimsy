@@ -1,6 +1,8 @@
 import { NativeModules, Platform } from "react-native";
 
+console.log("NativeModules available:", Object.keys(NativeModules).filter(k => k.includes("Health") || k.includes("Workout")).join(", ") || "none");
 const { HealthKitBridge } = NativeModules;
+console.log("HealthKitBridge:", HealthKitBridge ? "loaded" : "null");
 
 export interface HealthSwimData {
   startDate: string;
@@ -13,17 +15,27 @@ export interface HealthSwimData {
   hrv: number | null;
   vo2Max: number | null;
   sleepHours: number | null;
+  duration: number | null;
+  totalStrokes: number | null;
+  lapCount: number | null;
+  poolLengthYards: number | null;
+  swolf: number | null;
 }
 
 export function isAvailable(): boolean {
-  return Platform.OS === "ios" && HealthKitBridge != null;
+  const available = Platform.OS === "ios" && HealthKitBridge != null;
+  console.log("HealthKit available:", available, "Bridge:", HealthKitBridge != null);
+  return available;
 }
 
 export async function requestPermissions(): Promise<boolean> {
   if (!isAvailable()) return false;
   try {
-    return await HealthKitBridge.requestPermissions();
-  } catch {
+    const result = await HealthKitBridge.requestPermissions();
+    console.log("HealthKit permissions result:", result);
+    return result;
+  } catch (e) {
+    console.log("HealthKit permissions error:", e);
     return false;
   }
 }
@@ -31,7 +43,9 @@ export async function requestPermissions(): Promise<boolean> {
 export async function getSwimDataForDate(date: string): Promise<HealthSwimData | null> {
   if (!isAvailable()) return null;
   try {
+    console.log("HealthKit fetching swim data for:", date);
     const data = await HealthKitBridge.getSwimDataForDate(date);
+    console.log("HealthKit swim data:", JSON.stringify(data).slice(0, 300));
     if (!data || typeof data !== "object") return null;
     return {
       startDate: data.startDate || date,
@@ -44,6 +58,11 @@ export async function getSwimDataForDate(date: string): Promise<HealthSwimData |
       hrv: data.hrv ?? null,
       vo2Max: data.vo2Max ?? null,
       sleepHours: data.sleepHours ?? null,
+      duration: data.duration ?? null,
+      totalStrokes: data.totalStrokes ?? null,
+      lapCount: data.lapCount ?? null,
+      poolLengthYards: data.poolLengthYards ?? null,
+      swolf: data.swolf ?? null,
     };
   } catch {
     return null;

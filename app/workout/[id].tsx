@@ -1,4 +1,4 @@
-import { View, Text, ScrollView, Pressable, Alert, StyleSheet } from "react-native";
+import { View, Text, ScrollView, Image, Pressable, Alert, StyleSheet, Dimensions } from "react-native";
 import { useLocalSearchParams, router, Stack } from "expo-router";
 import { useEffect, useState } from "react";
 import FontAwesome from "@expo/vector-icons/FontAwesome";
@@ -172,6 +172,29 @@ export default function WorkoutDetail() {
               <Text style={{ color: colors.muted, fontSize: 13 }}>Loading health data...</Text>
             ) : healthData ? (
               <>
+                {(healthData.distance > 0 || healthData.totalStrokes != null || healthData.lapCount != null) && (
+                  <View style={[s.statsRow, { marginBottom: 8 }]}>
+                    {healthData.distance > 0 && (
+                      <View style={[s.statCard, { marginRight: 8 }]}>
+                        <Text style={[s.statLabel, { color: colors.swim[400] }]}>DISTANCE</Text>
+                        <Text style={s.statValue}>{Math.round(healthData.distance)}</Text>
+                        <Text style={s.statUnit}>yards</Text>
+                      </View>
+                    )}
+                    {healthData.totalStrokes != null && (
+                      <View style={[s.statCard, { marginRight: 8 }]}>
+                        <Text style={s.statLabel}>STROKES</Text>
+                        <Text style={s.statValue}>{healthData.totalStrokes}</Text>
+                      </View>
+                    )}
+                    {healthData.lapCount != null && (
+                      <View style={s.statCard}>
+                        <Text style={s.statLabel}>LAPS</Text>
+                        <Text style={s.statValue}>{healthData.lapCount}</Text>
+                      </View>
+                    )}
+                  </View>
+                )}
                 <View style={s.statsRow}>
                   {healthData.avgHeartRate != null && (
                     <View style={[s.statCard, { marginRight: 8 }]}>
@@ -390,6 +413,23 @@ export default function WorkoutDetail() {
         ) : null}
 
         {/* Sets */}
+        {/* Workout Photos */}
+        {workout.photos && workout.photos.length > 0 && (
+          <View style={{ marginBottom: 16 }}>
+            <Text style={s.setsHeader}>WORKOUT BOARD</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              {workout.photos.map((uri, i) => (
+                <Image
+                  key={i}
+                  source={{ uri }}
+                  style={s.workoutPhoto}
+                  resizeMode="cover"
+                />
+              ))}
+            </ScrollView>
+          </View>
+        )}
+
         <Text style={s.setsHeader}>SETS ({workout.sets.length})</Text>
         {workout.sets.map((set) => {
           const hasRepDetails = set.rep_details && set.rep_details.length > 0;
@@ -623,6 +663,13 @@ const s = StyleSheet.create({
   navBtnText: { fontSize: 13, fontWeight: "600", color: colors.swim[400], marginHorizontal: 6 },
   navBtnTextDisabled: { color: colors.muted },
   navCount: { fontSize: 12, color: colors.muted, fontWeight: "600" },
+  workoutPhoto: {
+    width: Dimensions.get("window").width - 56,
+    height: 200,
+    borderRadius: 14,
+    marginRight: 10,
+    backgroundColor: colors.surfaceLight,
+  },
   deleteBtn: {
     flexDirection: "row", alignItems: "center", justifyContent: "center",
     backgroundColor: colors.surface, borderRadius: 18, paddingVertical: 16,

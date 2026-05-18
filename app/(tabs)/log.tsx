@@ -6,6 +6,7 @@ import { useState, useCallback, useEffect } from "react";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import * as ImagePicker from "expo-image-picker";
+import * as FileSystem from "expo-file-system";
 import FontAwesome from "@expo/vector-icons/FontAwesome";
 import { saveWorkout, getWorkout, updateWorkout, getSettings, StoredWorkout } from "../../lib/storage";
 import { RepDetail } from "../../lib/types";
@@ -44,6 +45,8 @@ export default function LogSwim() {
   const [sets, setSets] = useState<SetInput[]>([createEmptySet()]);
   const [repDetailsMap, setRepDetailsMap] = useState<RepDetailsMap>({});
   const [benchmarks, setBenchmarks] = useState<BenchmarkInput[]>([]);
+  const [workoutPhotos, setWorkoutPhotos] = useState<string[]>([]);
+  const [ocrText, setOcrText] = useState<string | null>(null);
   const [feelingScore, setFeelingScore] = useState(5);
   const [notes, setNotes] = useState("");
   const [duration, setDuration] = useState("");
@@ -113,6 +116,10 @@ export default function LogSwim() {
         }
       }
       setRepDetailsMap(rdMap);
+
+      // Load photos
+      setWorkoutPhotos(w.photos || []);
+      setOcrText(w.ocrText || null);
 
       // Load benchmarks
       if (w.benchmarks && w.benchmarks.length > 0) {
@@ -293,6 +300,10 @@ export default function LogSwim() {
         return;
       }
 
+      // Save photo and OCR for training data
+      setWorkoutPhotos((prev) => [...prev, uri]);
+      setOcrText(ocrText);
+
       // Show OCR text in describe modal so user can edit before parsing
       setDescribeText(ocrText);
       setShowDescribe(true);
@@ -382,6 +393,19 @@ export default function LogSwim() {
         description: s.description || null,
       })).filter((s) => s.groups.length > 0);
 
+      // Copy photos to permanent storage
+      const savedPhotos: string[] = [];
+      for (const uri of workoutPhotos) {
+        try {
+          const dir = `${FileSystem.documentDirectory}photos/`;
+          await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+          const filename = `swim_${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`;
+          const dest = `${dir}${filename}`;
+          await FileSystem.copyAsync({ from: uri, to: dest });
+          savedPhotos.push(dest);
+        } catch {}
+      }
+
       const workoutData = {
         date: swimDate.toISOString(),
         total_yards: totalYards,
@@ -391,6 +415,8 @@ export default function LogSwim() {
         notes: notes || null,
         duration_minutes: duration ? parseInt(duration) : null,
         sets: quickMode ? [] : setsData,
+        photos: savedPhotos.length > 0 ? savedPhotos : undefined,
+        ocrText: ocrText || undefined,
         benchmarks: benchmarks.filter((b) => b.name.trim() || b.reps || b.distance || b.value || b.totalTime || b.avgPace || b.interval).map((b) => ({
           id: b.id,
           type: b.type,
@@ -427,6 +453,8 @@ export default function LogSwim() {
       setSets([createEmptySet()]);
       setRepDetailsMap({});
       setBenchmarks([]);
+      setWorkoutPhotos([]);
+      setOcrText(null);
       setSwimDate(new Date());
       setFeelingScore(5);
       setNotes("");

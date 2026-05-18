@@ -72,4 +72,6 @@ export interface Workout {
   created_at: string;
   sets?: SwimSet[];
   benchmarks?: Benchmark[];
+  photos?: string[];          // local file URIs of workout board photos
+  ocrText?: string | null;    // raw OCR text extracted from photos
 }
