@@ -8,7 +8,7 @@ import {
 } from "react-native";
 import TimeInput from "./TimeInput";
 import { useState, useEffect } from "react";
-import { Stroke, Effort, Segment, RepDetail, SetLine } from "../lib/types";
+import { Stroke, Effort, Segment, RepDetail } from "../lib/types";
 import { colors } from "../lib/theme";
 
 const EFFORTS: { label: string; value: Effort; color: string }[] = [
@@ -23,8 +23,8 @@ const STROKES: { label: string; value: Stroke }[] = [
   { label: "Bk", value: "back" },
   { label: "Br", value: "breast" },
   { label: "Fl", value: "fly" },
-  { label: "Kk", value: "kick" },
-  { label: "Dr", value: "drill" },
+  { label: "IM", value: "IM" },
+  { label: "Ch", value: "choice" },
 ];
 
 const OFFSETS = [-10, -5, 0, 5, 10, 15, 20];

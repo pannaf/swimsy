@@ -11,7 +11,7 @@ import FontAwesome from "@expo/vector-icons/FontAwesome";
 import { saveWorkout, getWorkout, updateWorkout, getSettings, StoredWorkout } from "../../lib/storage";
 import { RepDetail } from "../../lib/types";
 import { colors } from "../../lib/theme";
-import SetEntry, { SetInput, createEmptyGroup, GroupInput } from "../../components/SetEntry";
+import SetEntry, { SetInput, createEmptyGroup, createEmptyLine, GroupInput, LineInput } from "../../components/SetEntry";
 import RepDetailModal, { LineInfo } from "../../components/RepDetailModal";
 import FeelingSlider from "../../components/FeelingSlider";
 import BenchmarkEntry, { BenchmarkInput, createEmptyBenchmark } from "../../components/BenchmarkEntry";
@@ -95,13 +95,33 @@ export default function LogSwim() {
         groups: (s.groups || []).map((g) => ({
           id: g.id,
           rounds: String(g.rounds || 1),
-          lines: g.lines.map((l) => ({
-            id: l.id,
-            reps: String(l.reps),
-            distance: String(l.distance),
-            stroke: l.stroke,
-            interval: l.interval_seconds != null ? String(l.interval_seconds) : "",
-          })),
+          lines: g.lines.map((l): LineInput => {
+            if (l.kind === "rest") {
+              return {
+                ...createEmptyLine(),
+                id: l.id,
+                kind: "rest",
+                rest_seconds: String(l.rest_seconds),
+              };
+            }
+            return {
+              ...createEmptyLine(),
+              id: l.id,
+              kind: "work",
+              reps: String(l.reps),
+              distance: String(l.distance),
+              stroke: l.stroke,
+              mode: l.mode || "swim",
+              effort: l.effort || "",
+              interval: l.interval_seconds != null ? String(l.interval_seconds) : "",
+              interval_type: l.interval_type || "fixed",
+              base_offset: l.base_offset || 0,
+              modifiers: l.modifiers || [],
+              equipment: l.equipment || [],
+              breathing: l.breathing || null,
+              targets: l.targets || null,
+            };
+          }),
         })),
         description: s.description || "",
         hasDetails: (s.rep_details || []).length > 0,
@@ -260,6 +280,7 @@ export default function LogSwim() {
               const lineReps = parseInt(l.reps) || 1;
               const effectiveReps = (groupRounds > 1 && lineReps === groupRounds) ? 1 : lineReps;
               return {
+                ...createEmptyLine(),
                 id: Date.now().toString() + Math.random().toString(36).slice(2),
                 reps: String(effectiveReps),
                 distance: String(l.distance || 100),
@@ -320,8 +341,10 @@ export default function LogSwim() {
     : sets.reduce((sum, set) =>
         sum + set.groups.reduce((gs, g) => {
           const rounds = parseInt(g.rounds) || 1;
-          return gs + g.lines.reduce((ls, l) =>
-            ls + (parseInt(l.reps) || 0) * (parseInt(l.distance) || 0), 0) * rounds;
+          return gs + g.lines.reduce((ls, l) => {
+            if (l.kind === "rest") return ls;
+            return ls + (parseInt(l.reps) || 0) * (parseInt(l.distance) || 0);
+          }, 0) * rounds;
         }, 0),
       0);
 
@@ -348,13 +371,15 @@ export default function LogSwim() {
   const modalLines: LineInfo[] = modalSet?.groups
     ? modalSet.groups.flatMap((g) => {
         const rounds = parseInt(g.rounds) || 1;
-        return g.lines.map((l) => ({
-          id: l.id,
-          reps: (parseInt(l.reps) || 1) * rounds,
-          distance: parseInt(l.distance) || 100,
-          stroke: l.stroke,
-          interval: l.interval ? parseInt(l.interval) : null,
-        }));
+        return g.lines
+          .filter((l) => l.kind !== "rest")
+          .map((l) => ({
+            id: l.id,
+            reps: (parseInt(l.reps) || 1) * rounds,
+            distance: parseInt(l.distance) || 100,
+            stroke: l.stroke,
+            interval: l.interval ? parseInt(l.interval) : null,
+          }));
       })
     : [];
 
@@ -380,14 +405,28 @@ export default function LogSwim() {
           id: g.id,
           rounds: parseInt(g.rounds) || 1,
           lines: g.lines
-            .filter((l) => (parseInt(l.distance) || 0) > 0)
-            .map((l) => ({
-              id: l.id,
-              reps: parseInt(l.reps) || 1,
-              distance: parseInt(l.distance) || 0,
-              stroke: l.stroke,
-              interval_seconds: l.interval ? parseInt(l.interval) : null,
-            })),
+            .filter((l) => l.kind === "rest" ? (parseInt(l.rest_seconds) || 0) > 0 : (parseInt(l.distance) || 0) > 0)
+            .map((l): any => {
+              if (l.kind === "rest") {
+                return { kind: "rest", id: l.id, rest_seconds: parseInt(l.rest_seconds) || 0 };
+              }
+              return {
+                kind: "work",
+                id: l.id,
+                reps: parseInt(l.reps) || 1,
+                distance: parseInt(l.distance) || 0,
+                stroke: l.stroke,
+                mode: l.mode !== "swim" ? l.mode : undefined,
+                effort: l.effort || undefined,
+                interval_seconds: l.interval ? parseInt(l.interval) : null,
+                interval_type: l.interval_type !== "fixed" ? l.interval_type : undefined,
+                base_offset: l.base_offset || undefined,
+                modifiers: l.modifiers.length > 0 ? l.modifiers : undefined,
+                equipment: l.equipment.length > 0 ? l.equipment : undefined,
+                breathing: l.breathing || undefined,
+                targets: l.targets || undefined,
+              };
+            }),
         })).filter((g) => g.lines.length > 0),
         rep_details: repDetailsMap[s.id] || [],
         description: s.description || null,

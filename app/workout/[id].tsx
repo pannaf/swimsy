@@ -3,7 +3,7 @@ import { useLocalSearchParams, router, Stack } from "expo-router";
 import { useEffect, useState } from "react";
 import FontAwesome from "@expo/vector-icons/FontAwesome";
 import { getWorkout, getWorkouts, deleteWorkout, StoredWorkout } from "../../lib/storage";
-import { Effort } from "../../lib/types";
+import { Effort, WorkLine, SetLine } from "../../lib/types";
 import { colors } from "../../lib/theme";
 import { isAvailable, requestPermissions, getSwimDataForDate, HealthSwimData } from "../../lib/healthkit";
 import { isConnected as isWhoopConnected, getDataForDate as getWhoopData, WhoopDayData, ZoneDurations } from "../../lib/whoop";
@@ -446,47 +446,94 @@ export default function WorkoutDetail() {
                     {(group.rounds || 1) > 1 && <View style={s.bracketBar} />}
                     <View style={{ flex: 1 }}>
               {group.lines.map((line, li) => {
+                if (line.kind === "rest") {
+                  return (
+                    <View key={line.id} style={[li > 0 ? s.lineDivider : undefined, s.restLine]}>
+                      <Text style={s.restLineText}>
+                        {line.rest_seconds >= 60
+                          ? `${Math.floor(line.rest_seconds / 60)}:${(line.rest_seconds % 60).toString().padStart(2, "0")}`
+                          : `:${line.rest_seconds}`} rest
+                      </Text>
+                    </View>
+                  );
+                }
+                const wl = line as WorkLine;
                 const rounds = group.rounds || 1;
                 const lineStart = repOffset;
-                repOffset += line.reps * rounds;
+                repOffset += wl.reps * rounds;
+
+                // Build tags string
+                const tags: string[] = [];
+                if (wl.mode && wl.mode !== "swim") tags.push(wl.mode);
+                if (wl.effort) tags.push(wl.effort);
+                if (wl.modifiers) tags.push(...wl.modifiers.map((m) => m.replace("_", " ")));
+                if (wl.equipment) tags.push(...wl.equipment);
+                if (wl.breathing) {
+                  if (wl.breathing.type === "none") tags.push("no breath");
+                  else if (wl.breathing.type === "every_n") tags.push(`breathe every ${wl.breathing.value}`);
+                  else if (wl.breathing.type === "limited") tags.push(`${wl.breathing.value} breath/25`);
+                }
+
                 return (
-                  <View key={line.id} style={li > 0 ? s.lineDivider : undefined}>
+                  <View key={wl.id} style={li > 0 ? s.lineDivider : undefined}>
                     <View style={s.setRow}>
                       <Text style={s.setText}>
-                        {line.reps > 1 ? `${line.reps} x ` : ""}{line.distance}
-                        <Text style={s.setStroke}> {line.stroke}</Text>
+                        {wl.reps > 1 ? `${wl.reps} x ` : ""}{wl.distance}
+                        <Text style={s.setStroke}> {wl.stroke}</Text>
                       </Text>
                       <View style={s.lineRight}>
                         {(() => {
                           const poolLen = workout.pool_length || 25;
-                          const dotCount = Math.max(1, Math.floor(line.distance / poolLen));
+                          const dotCount = Math.max(1, Math.floor(wl.distance / poolLen));
                           const segs = hasRepDetails ? set.rep_details[lineStart]?.segments : null;
                           return (
                             <View style={s.effortDots}>
                               {Array.from({ length: dotCount }, (_, di) => {
                                 const seg = segs?.[di];
-                                const color = seg ? (EFFORT_COLORS[seg.effort] || colors.muted) : colors.muted;
+                                const effortColor = wl.effort ? (EFFORT_COLORS[wl.effort] || colors.muted) : colors.muted;
+                                const color = seg ? (EFFORT_COLORS[seg.effort] || colors.muted) : effortColor;
                                 return <View key={di} style={[s.effortDot, { backgroundColor: color }]} />;
                               })}
                             </View>
                           );
                         })()}
-                        {line.interval_seconds != null && (
-                          <Text style={s.setInterval}>@ {fmtTime(line.interval_seconds)}</Text>
+                        {wl.interval_seconds != null && (
+                          <Text style={s.setInterval}>@ {fmtTime(wl.interval_seconds)}</Text>
                         )}
                       </View>
                     </View>
+                    {tags.length > 0 && (
+                      <View style={s.tagRow}>
+                        {tags.map((tag, ti) => (
+                          <View key={ti} style={s.tagBadge}>
+                            <Text style={s.tagText}>{tag}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    )}
+                    {wl.targets && (
+                      <View style={s.tagRow}>
+                        {wl.targets.stroke_count != null && (
+                          <View style={s.tagBadge}><Text style={s.tagText}>{wl.targets.stroke_count} strokes</Text></View>
+                        )}
+                        {wl.targets.dps != null && (
+                          <View style={s.tagBadge}><Text style={s.tagText}>DPS {wl.targets.dps}</Text></View>
+                        )}
+                        {wl.targets.tempo_seconds != null && (
+                          <View style={s.tagBadge}><Text style={s.tagText}>tempo {wl.targets.tempo_seconds}s</Text></View>
+                        )}
+                      </View>
+                    )}
 
-                    {hasRepDetails && line.reps > 1 &&
-                      set.rep_details.slice(lineStart, lineStart + line.reps).map((rep, localRi) => {
+                    {hasRepDetails && wl.reps > 1 &&
+                      set.rep_details.slice(lineStart, lineStart + wl.reps).map((rep, localRi) => {
                         if (!rep) return null;
                         const hasCustomInterval =
-                          rep.interval != null && rep.interval !== line.interval_seconds;
-                        // Segments are interesting only if they have mixed efforts or strokes different from the line
+                          rep.interval != null && rep.interval !== wl.interval_seconds;
                         const hasSegments =
                           rep.segments &&
                           rep.segments.length > 1 &&
-                          !(rep.segments.every((seg) => seg.stroke === line.stroke) &&
+                          !(rep.segments.every((seg) => seg.stroke === wl.stroke) &&
                             rep.segments.every((seg) => seg.effort === rep.segments[0].effort));
                         if (!hasCustomInterval && !hasSegments) return null;
                         return (
@@ -618,6 +665,14 @@ const s = StyleSheet.create({
   bracketWrap: { flexDirection: "row" },
   bracketBar: { width: 3, backgroundColor: colors.swim[600], borderRadius: 2, marginRight: 10, marginVertical: 2 },
   lineDivider: { borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 10, marginTop: 10 },
+  restLine: { paddingVertical: 6, alignItems: "center" },
+  restLineText: { fontSize: 13, fontWeight: "600", color: colors.muted, fontStyle: "italic" },
+  tagRow: { flexDirection: "row", flexWrap: "wrap", marginTop: 4 },
+  tagBadge: {
+    backgroundColor: colors.surfaceLight, borderRadius: 6, paddingHorizontal: 7, paddingVertical: 2,
+    marginRight: 4, marginBottom: 2,
+  },
+  tagText: { fontSize: 10, fontWeight: "600", color: colors.swim[400] },
   setDesc: { fontSize: 13, color: colors.muted, marginTop: 6 },
   repDetail: {
     borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 8, marginTop: 8,
