@@ -8,7 +8,7 @@ import {
 } from "react-native";
 import TimeInput from "./TimeInput";
 import { useState, useEffect } from "react";
-import { Stroke, Effort, Segment, RepDetail } from "../lib/types";
+import { Stroke, Effort, Segment, RepDetail, RepActual, Equipment, BreathControl } from "../lib/types";
 import { colors } from "../lib/theme";
 
 const EFFORTS: { label: string; value: Effort; color: string }[] = [
@@ -27,7 +27,20 @@ const STROKES: { label: string; value: Stroke }[] = [
   { label: "Ch", value: "choice" },
 ];
 
+const EQUIPMENT_OPTIONS: { label: string; value: Equipment }[] = [
+  { label: "Fins", value: "fins" },
+  { label: "Paddles", value: "paddles" },
+  { label: "Buoy", value: "buoy" },
+  { label: "Board", value: "kickboard" },
+  { label: "Snorkel", value: "snorkel" },
+  { label: "Band", value: "band" },
+];
+
 const OFFSETS = [-10, -5, 0, 5, 10, 15, 20];
+
+function toggleInArray<T>(arr: T[], val: T): T[] {
+  return arr.includes(val) ? arr.filter((v) => v !== val) : [...arr, val];
+}
 
 function formatTime(sec: number): string {
   const m = Math.floor(sec / 60);
@@ -63,7 +76,8 @@ interface Props {
   poolLength: number;
   baseTime100: number;
   repDetails: RepDetail[];
-  onSave: (details: RepDetail[]) => void;
+  repActuals: RepActual[];
+  onSave: (details: RepDetail[], actuals: RepActual[]) => void;
   onClose: () => void;
 }
 
@@ -73,10 +87,12 @@ export default function RepDetailModal({
   poolLength,
   baseTime100,
   repDetails,
+  repActuals,
   onSave,
   onClose,
 }: Props) {
   const [details, setDetails] = useState<RepDetail[]>([]);
+  const [actuals, setActuals] = useState<RepActual[]>([]);
   const [expandedRep, setExpandedRep] = useState<number | null>(null);
 
   const totalReps = (lines || []).reduce((s, l) => s + (l.reps || 0), 0);
@@ -99,12 +115,44 @@ export default function RepDetailModal({
         }
         setDetails(newDetails);
       }
+      // Initialize actuals array to match total reps
+      const newActuals: RepActual[] = [];
+      for (let i = 0; i < totalReps; i++) {
+        newActuals.push(repActuals[i] || { time_seconds: 0 });
+      }
+      setActuals(newActuals);
       setExpandedRep(null);
     }
   }, [visible, totalReps]);
 
   function updateRep(idx: number, updates: Partial<RepDetail>) {
     setDetails((d) => d.map((r, i) => (i === idx ? { ...r, ...updates } : r)));
+  }
+
+  // Apply equipment to all segments in a rep
+  function setRepEquipment(repIdx: number, equipment: Equipment[]) {
+    const rep = details[repIdx];
+    if (!rep) return;
+    const segs = rep.segments.map((seg) => ({ ...seg, equipment: equipment.length > 0 ? equipment : undefined }));
+    updateRep(repIdx, { segments: segs });
+  }
+
+  // Apply breathing to all segments in a rep
+  function setRepBreathing(repIdx: number, breathing: BreathControl | null) {
+    const rep = details[repIdx];
+    if (!rep) return;
+    const segs = rep.segments.map((seg) => ({ ...seg, breathing: breathing || undefined }));
+    updateRep(repIdx, { segments: segs });
+  }
+
+  // Get rep-level equipment (from first segment, assuming all same)
+  function getRepEquipment(repIdx: number): Equipment[] {
+    return details[repIdx]?.segments?.[0]?.equipment || [];
+  }
+
+  // Get rep-level breathing (from first segment)
+  function getRepBreathing(repIdx: number): BreathControl | null {
+    return details[repIdx]?.segments?.[0]?.breathing || null;
   }
 
   function updateSegment(repIdx: number, segIdx: number, updates: Partial<Segment>) {
@@ -188,10 +236,8 @@ export default function RepDetailModal({
           <Pressable onPress={onClose}>
             <Text style={s.cancelBtn}>Cancel</Text>
           </Pressable>
-          <Text style={s.title}>
-            {lines.map((l) => `${l.reps}x${l.distance}`).join(" + ")} Details
-          </Text>
-          <Pressable onPress={() => onSave(details)}>
+          <Text style={s.title}>Details</Text>
+          <Pressable onPress={() => onSave(details, actuals)}>
             <Text style={s.saveBtn}>Save</Text>
           </Pressable>
         </View>
@@ -267,6 +313,16 @@ export default function RepDetailModal({
                         onPress={() => setExpandedRep(isExpanded ? null : globalRi)}
                       >
                         <Text style={s.repTitle}>#{localRi + 1}</Text>
+                        <TimeInput
+                          style={s.actualInput}
+                          value={actuals[globalRi]?.time_seconds || null}
+                          onChange={(v) => {
+                            setActuals((a) => a.map((act, i) =>
+                              i === globalRi ? { ...act, time_seconds: v || 0 } : act
+                            ));
+                          }}
+                          placeholder="time"
+                        />
                         <View style={s.repSummary}>
                           {rep.interval != null && (
                             <Text style={s.repInterval}>@ {formatTime(rep.interval)}</Text>
@@ -367,6 +423,50 @@ export default function RepDetailModal({
                               </View>
                             </View>
                           ))}
+
+                          {/* Per-rep equipment */}
+                          <Text style={s.repSectionLabel}>EQUIPMENT</Text>
+                          <View style={s.segChips}>
+                            {EQUIPMENT_OPTIONS.map((eq) => {
+                              const active = getRepEquipment(globalRi).includes(eq.value);
+                              return (
+                                <Pressable
+                                  key={eq.value}
+                                  onPress={() => setRepEquipment(globalRi, toggleInArray(getRepEquipment(globalRi), eq.value))}
+                                  style={[s.effortChip, active && s.equipChipActive]}
+                                >
+                                  <Text style={[s.effortText, active && s.effortTextActive]}>{eq.label}</Text>
+                                </Pressable>
+                              );
+                            })}
+                          </View>
+
+                          {/* Per-rep breathing */}
+                          <Text style={s.repSectionLabel}>BREATHING</Text>
+                          <View style={s.segChips}>
+                            {([
+                              { label: "Normal", val: null },
+                              { label: "No breath", val: { type: "none" as const } },
+                              { label: "Every 3", val: { type: "every_n" as const, value: 3 } },
+                              { label: "Every 5", val: { type: "every_n" as const, value: 5 } },
+                              { label: "Every 7", val: { type: "every_n" as const, value: 7 } },
+                              { label: "1 br/25", val: { type: "limited" as const, value: 1 } },
+                            ]).map((opt) => {
+                              const current = getRepBreathing(globalRi);
+                              const active = opt.val === null
+                                ? current === null
+                                : current?.type === opt.val.type && (opt.val.type === "none" || current?.value === opt.val.value);
+                              return (
+                                <Pressable
+                                  key={opt.label}
+                                  onPress={() => setRepBreathing(globalRi, opt.val)}
+                                  style={[s.effortChip, active && s.breathChipActive]}
+                                >
+                                  <Text style={[s.effortText, active && s.effortTextActive]}>{opt.label}</Text>
+                                </Pressable>
+                              );
+                            })}
+                          </View>
                         </View>
                       )}
                     </View>
@@ -468,7 +568,12 @@ const s = StyleSheet.create({
     alignItems: "center",
     padding: 14,
   },
-  repTitle: { fontSize: 14, fontWeight: "700", color: colors.white },
+  repTitle: { fontSize: 14, fontWeight: "700", color: colors.white, marginRight: 8 },
+  actualInput: {
+    backgroundColor: colors.surfaceLight, borderRadius: 8, width: 56,
+    paddingVertical: 4, paddingHorizontal: 6, fontSize: 13, fontWeight: "600",
+    color: colors.swim[400], textAlign: "center", marginRight: 8,
+  },
   repSummary: { flexDirection: "row", alignItems: "center" },
   repInterval: { fontSize: 12, color: colors.muted, marginRight: 10 },
   segmentDots: { flexDirection: "row", marginRight: 8 },
@@ -518,4 +623,10 @@ const s = StyleSheet.create({
   strokeChipActive: { backgroundColor: colors.swim[600] },
   strokeText: { fontSize: 10, fontWeight: "600", color: colors.muted },
   strokeTextActive: { color: colors.white },
+  repSectionLabel: {
+    fontSize: 9, color: colors.muted, fontWeight: "700", letterSpacing: 1,
+    marginTop: 10, marginBottom: 4,
+  },
+  equipChipActive: { backgroundColor: colors.swim[600] },
+  breathChipActive: { backgroundColor: "#7c3aed" },
 });

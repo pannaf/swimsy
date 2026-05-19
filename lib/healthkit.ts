@@ -20,6 +20,7 @@ export interface HealthSwimData {
   lapCount: number | null;
   poolLengthYards: number | null;
   swolf: number | null;
+  strokeBreakdown: Record<string, number> | null;
 }
 
 export function isAvailable(): boolean {
@@ -63,6 +64,7 @@ export async function getSwimDataForDate(date: string): Promise<HealthSwimData |
       lapCount: data.lapCount ?? null,
       poolLengthYards: data.poolLengthYards ?? null,
       swolf: data.swolf ?? null,
+      strokeBreakdown: data.strokeBreakdown ?? null,
     };
   } catch {
     return null;

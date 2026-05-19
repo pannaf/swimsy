@@ -56,7 +56,6 @@ const OFFSETS = [-10, -5, 0, 5, 10, 15, 20];
 export interface LineInput {
   id: string;
   kind: "work" | "rest";
-  // work fields
   reps: string;
   distance: string;
   stroke: Stroke;
@@ -69,7 +68,6 @@ export interface LineInput {
   equipment: Equipment[];
   breathing: BreathControl | null;
   targets: Targets | null;
-  // rest fields
   rest_seconds: string;
 }
 
@@ -90,6 +88,8 @@ interface Props {
   set: SetInput;
   index: number;
   baseTime100: number;
+  expandedLineId: string | null;
+  onExpandLine: (id: string | null) => void;
   onUpdate: (updates: Partial<SetInput>) => void;
   onRemove: () => void;
   onMoveUp: () => void;
@@ -113,6 +113,10 @@ function suggestedInterval(distance: number, baseTime100: number): number {
 
 function paceValue(dist: number, baseTime100: number, offset: number): number {
   return suggestedInterval(dist, baseTime100) + offset;
+}
+
+function effortColor(effort: Effort | ""): string {
+  return EFFORTS.find((e) => e.value === effort)?.color || colors.muted;
 }
 
 export function createEmptyLine(): LineInput {
@@ -163,105 +167,165 @@ export function createEmptyGroup(): GroupInput {
   };
 }
 
-// --- Chip toggle helpers ---
-
 function toggleInArray<T>(arr: T[], val: T): T[] {
   return arr.includes(val) ? arr.filter((v) => v !== val) : [...arr, val];
 }
 
-// --- Rest Line Entry ---
+// --- Summary line for tags ---
+function tagSummary(line: LineInput): string[] {
+  const tags: string[] = [];
+  if (line.mode !== "swim") tags.push(line.mode);
+  if (line.modifiers.length > 0) tags.push(...line.modifiers.map((m) => m.replace(/_/g, " ")));
+  if (line.equipment.length > 0) tags.push(line.equipment.join(", "));
+  if (line.breathing) {
+    if (line.breathing.type === "none") tags.push("no breath");
+    else if (line.breathing.type === "every_n") tags.push(`every ${line.breathing.value}`);
+    else if (line.breathing.type === "limited") tags.push(`${line.breathing.value}br/25`);
+  }
+  return tags;
+}
 
-function RestLineEntry({
+// === COLLAPSED LINE ===
+function CollapsedLine({
   line,
-  onUpdate,
+  onExpand,
   onRemove,
-  onSwitchToWork,
   canRemove,
 }: {
   line: LineInput;
-  onUpdate: (u: Partial<LineInput>) => void;
+  onExpand: () => void;
   onRemove: () => void;
-  onSwitchToWork: () => void;
   canRemove: boolean;
 }) {
-  return (
-    <View style={s.lineCard}>
-      <View style={s.inputRow}>
-        <Pressable onPress={onSwitchToWork} style={s.kindToggle}>
-          <Text style={s.kindToggleTextInactive}>Work</Text>
-        </Pressable>
-        <Pressable style={[s.kindToggle, s.kindToggleActive]}>
-          <Text style={s.kindToggleTextActive}>Rest</Text>
-        </Pressable>
-        <View style={{ flex: 1 }} />
+  if (line.kind === "rest") {
+    const sec = parseInt(line.rest_seconds) || 0;
+    return (
+      <Pressable onPress={onExpand} style={s.collapsedRow}>
+        <Text style={s.restText}>
+          {sec >= 60 ? `${Math.floor(sec / 60)}:${(sec % 60).toString().padStart(2, "0")}` : `:${sec}`} rest
+        </Text>
         {canRemove && (
-          <Pressable onPress={onRemove} hitSlop={8}>
-            <FontAwesome name="times" size={14} color={colors.accent.red} />
+          <Pressable onPress={onRemove} hitSlop={12} style={s.collapsedRemove}>
+            <FontAwesome name="times" size={11} color={colors.accent.red} />
           </Pressable>
         )}
+      </Pressable>
+    );
+  }
+
+  const reps = parseInt(line.reps) || 1;
+  const dist = line.distance || "?";
+  const interval = line.interval ? parseInt(line.interval) : null;
+  const tags = tagSummary(line);
+
+  return (
+    <Pressable onPress={onExpand} style={s.collapsedRow}>
+      <View style={s.collapsedLeft}>
+        {line.effort ? (
+          <View style={[s.effortDotSmall, { backgroundColor: effortColor(line.effort) }]} />
+        ) : null}
+        <Text style={s.collapsedText}>
+          {reps > 1 ? `${reps} x ` : ""}{dist}
+          <Text style={s.collapsedStroke}> {line.stroke}</Text>
+          {line.mode !== "swim" && <Text style={s.collapsedMode}> {line.mode}</Text>}
+        </Text>
+        {tags.length > 0 && (
+          <View style={s.collapsedTags}>
+            {tags.map((t, i) => (
+              <View key={i} style={s.miniTag}><Text style={s.miniTagText}>{t}</Text></View>
+            ))}
+          </View>
+        )}
       </View>
-      <View style={s.restRow}>
-        <TextInput
-          style={[s.input, { width: 64, textAlign: "center" }]}
-          value={line.rest_seconds}
-          onChangeText={(v) => onUpdate({ rest_seconds: v })}
-          keyboardType="number-pad"
-          placeholder="30"
-          placeholderTextColor={colors.muted}
-        />
-        <Text style={s.restLabel}>seconds rest</Text>
+      <View style={s.collapsedRight}>
+        {interval != null && interval > 0 && (
+          <Text style={s.collapsedInterval}>@ {formatTime(interval)}</Text>
+        )}
+        <FontAwesome name="chevron-right" size={10} color={colors.muted} style={{ marginLeft: 8 }} />
       </View>
-      <View style={s.restChips}>
-        {[10, 15, 20, 30, 45, 60, 90, 120].map((sec) => (
-          <Pressable
-            key={sec}
-            onPress={() => onUpdate({ rest_seconds: sec.toString() })}
-            style={[s.distChip, parseInt(line.rest_seconds) === sec && s.distChipActive]}
-          >
-            <Text style={[s.distText, parseInt(line.rest_seconds) === sec && s.distTextActive]}>
-              {sec >= 60 ? `${sec / 60}:00` : `:${sec}`}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
-    </View>
+    </Pressable>
   );
 }
 
-// --- Work Line Entry ---
-
-function WorkLineEntry({
+// === EXPANDED LINE ===
+function ExpandedLine({
   line,
   baseTime100,
   onUpdate,
   onRemove,
-  onSwitchToRest,
+  onCollapse,
   canRemove,
 }: {
   line: LineInput;
   baseTime100: number;
   onUpdate: (u: Partial<LineInput>) => void;
   onRemove: () => void;
-  onSwitchToRest: () => void;
+  onCollapse: () => void;
   canRemove: boolean;
 }) {
   const [showMore, setShowMore] = useState(
     line.modifiers.length > 0 || line.equipment.length > 0 || line.breathing != null || line.targets != null
   );
+
+  // --- REST ---
+  if (line.kind === "rest") {
+    return (
+      <View style={s.expandedCard}>
+        <View style={s.expandedHeader}>
+          <Pressable onPress={onCollapse}><Text style={s.doneBtn}>Done</Text></Pressable>
+          {canRemove && (
+            <Pressable onPress={onRemove} hitSlop={8}>
+              <FontAwesome name="trash-o" size={14} color={colors.accent.red} />
+            </Pressable>
+          )}
+        </View>
+        <View style={s.restInputRow}>
+          <TextInput
+            style={[s.input, { width: 64, textAlign: "center" }]}
+            value={line.rest_seconds}
+            onChangeText={(v) => onUpdate({ rest_seconds: v })}
+            keyboardType="number-pad"
+            placeholder="30"
+            placeholderTextColor={colors.muted}
+            autoFocus
+          />
+          <Text style={s.restLabel}>seconds rest</Text>
+        </View>
+        <View style={s.chipRow}>
+          {[10, 15, 20, 30, 45, 60, 90, 120].map((sec) => (
+            <Pressable
+              key={sec}
+              onPress={() => onUpdate({ rest_seconds: sec.toString() })}
+              style={[s.chip, parseInt(line.rest_seconds) === sec && s.chipActive]}
+            >
+              <Text style={[s.chipText, parseInt(line.rest_seconds) === sec && s.chipTextActive]}>
+                {sec >= 60 ? `${sec / 60}:00` : `:${sec}`}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      </View>
+    );
+  }
+
+  // --- WORK ---
   const dist = parseInt(line.distance) || 0;
   const currentInterval = line.interval ? parseInt(line.interval) : 0;
 
   return (
-    <View style={s.lineCard}>
-      {/* Kind toggle + reps x distance */}
-      <View style={s.inputRow}>
-        <Pressable style={[s.kindToggle, s.kindToggleActive]}>
-          <Text style={s.kindToggleTextActive}>Work</Text>
-        </Pressable>
-        <Pressable onPress={onSwitchToRest} style={s.kindToggle}>
-          <Text style={s.kindToggleTextInactive}>Rest</Text>
-        </Pressable>
-        <View style={{ width: 8 }} />
+    <View style={s.expandedCard}>
+      {/* Header */}
+      <View style={s.expandedHeader}>
+        <Pressable onPress={onCollapse}><Text style={s.doneBtn}>Done</Text></Pressable>
+        {canRemove && (
+          <Pressable onPress={onRemove} hitSlop={8}>
+            <FontAwesome name="trash-o" size={14} color={colors.accent.red} />
+          </Pressable>
+        )}
+      </View>
+
+      {/* Row 1: Reps x Distance + quick picks */}
+      <View style={s.repsDistRow}>
         <TextInput
           style={[s.input, { width: 42, textAlign: "center" }]}
           value={line.reps}
@@ -270,99 +334,60 @@ function WorkLineEntry({
           placeholder="1"
           placeholderTextColor={colors.muted}
         />
-        <Text style={s.x}>x</Text>
+        <Text style={s.x}>×</Text>
         <TextInput
-          style={[s.input, { width: 58, textAlign: "center" }]}
+          style={[s.input, { width: 56, textAlign: "center" }]}
           value={line.distance}
           onChangeText={(v) => onUpdate({ distance: v })}
           keyboardType="number-pad"
           placeholder="100"
           placeholderTextColor={colors.muted}
+          autoFocus
         />
-        {canRemove && (
-          <Pressable onPress={onRemove} hitSlop={8} style={{ marginLeft: "auto" }}>
-            <FontAwesome name="times" size={14} color={colors.accent.red} />
-          </Pressable>
-        )}
+        <View style={s.inlineChips}>
+          {[25, 50, 100, 200, 300, 500].map((d) => (
+            <Pressable
+              key={d}
+              onPress={() => onUpdate({ distance: d.toString() })}
+              style={[s.tinyChip, dist === d && s.chipActive]}
+            >
+              <Text style={[s.tinyChipText, dist === d && s.chipTextActive]}>{d}</Text>
+            </Pressable>
+          ))}
+        </View>
       </View>
 
-      {/* Distance chips */}
-      <View style={s.distChips}>
-        {[25, 50, 75, 100, 150, 200, 250, 300, 400, 500].map((d) => (
-          <Pressable
-            key={d}
-            onPress={() => onUpdate({ distance: d.toString() })}
-            style={[s.distChip, dist === d && s.distChipActive]}
-          >
-            <Text style={[s.distText, dist === d && s.distTextActive]}>{d}</Text>
-          </Pressable>
-        ))}
-      </View>
-
-      {/* Stroke + Mode row */}
-      <View style={s.strokes}>
+      {/* Row 2: Stroke */}
+      <View style={s.tightRow}>
         {STROKES.map((st) => (
           <Pressable
             key={st.value}
             onPress={() => onUpdate({ stroke: st.value })}
-            style={[s.strokeChip, line.stroke === st.value && s.strokeActive]}
+            style={[s.tinyChip, line.stroke === st.value && s.chipActive]}
           >
-            <Text style={[s.strokeText, line.stroke === st.value && s.strokeTextActive]}>
-              {st.label}
-            </Text>
-          </Pressable>
-        ))}
-        <View style={{ width: 6 }} />
-        {MODES.map((m) => (
-          <Pressable
-            key={m.value}
-            onPress={() => onUpdate({ mode: m.value })}
-            style={[s.strokeChip, line.mode === m.value && s.modeActive]}
-          >
-            <Text style={[s.strokeText, line.mode === m.value && s.modeTextActive]}>
-              {m.label}
-            </Text>
+            <Text style={[s.tinyChipText, line.stroke === st.value && s.chipTextActive]}>{st.label}</Text>
           </Pressable>
         ))}
       </View>
 
-      {/* Effort row */}
-      <View style={s.effortRow}>
-        {EFFORTS.map((e) => (
-          <Pressable
-            key={e.value}
-            onPress={() => onUpdate({ effort: line.effort === e.value ? "" : e.value })}
-            style={[s.effortChip, line.effort === e.value && { backgroundColor: e.color }]}
-          >
-            <Text style={[s.effortChipText, line.effort === e.value && s.effortChipTextActive]}>
-              {e.label}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
-
-      {/* Interval */}
+      {/* Row 3: Interval quick picks + custom */}
       {dist > 0 && (
-        <View style={s.paceRow}>
-          <View style={s.paceChips}>
-            {OFFSETS.map((offset) => {
-              const val = paceValue(dist, baseTime100, offset);
-              const isActive = currentInterval === val;
-              const label = offset === 0 ? "base" : offset > 0 ? `+${offset}` : `${offset}`;
-              return (
-                <Pressable
-                  key={offset}
-                  onPress={() => onUpdate({ interval: val.toString() })}
-                  style={[s.paceChip, isActive && s.paceChipActive]}
-                >
-                  <Text style={[s.paceChipLabel, isActive && s.paceChipLabelActive]}>{label}</Text>
-                  <Text style={[s.paceChipTime, isActive && s.paceChipTimeActive]}>
-                    {formatTime(val)}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
+        <View style={s.tightRow}>
+          {OFFSETS.map((offset) => {
+            const val = paceValue(dist, baseTime100, offset);
+            const isActive = currentInterval === val;
+            const label = offset === 0 ? "B" : offset > 0 ? `+${offset}` : `${offset}`;
+            return (
+              <Pressable
+                key={offset}
+                onPress={() => onUpdate({ interval: val.toString() })}
+                style={[s.paceChip, isActive && s.chipActive]}
+              >
+                <Text style={[s.paceLabel, isActive && s.paceLabelActive]}>{label}</Text>
+                <Text style={[s.paceTime, isActive && s.chipTextActive]}>{formatTime(val)}</Text>
+              </Pressable>
+            );
+          })}
           <TimeInput
             value={currentInterval || null}
             onChange={(v) => onUpdate({ interval: v != null ? v.toString() : "" })}
@@ -372,16 +397,42 @@ function WorkLineEntry({
 
       {/* More options toggle */}
       <Pressable onPress={() => setShowMore(!showMore)} style={s.moreToggle}>
-        <Text style={s.moreToggleText}>
-          {showMore ? "Less options" : "More options"}
-        </Text>
-        <FontAwesome name={showMore ? "chevron-up" : "chevron-down"} size={10} color={colors.muted} />
+        <Text style={s.moreToggleText}>{showMore ? "Less" : "More"}</Text>
+        <FontAwesome name={showMore ? "chevron-up" : "chevron-down"} size={9} color={colors.muted} />
       </Pressable>
 
       {showMore && (
-        <View style={s.moreSection}>
+        <View>
+          {/* Mode */}
+          <Text style={s.sectionLabel}>MODE</Text>
+          <View style={s.chipRow}>
+            {MODES.map((m) => (
+              <Pressable
+                key={m.value}
+                onPress={() => onUpdate({ mode: m.value })}
+                style={[s.chip, line.mode === m.value && s.modeChipActive]}
+              >
+                <Text style={[s.chipText, line.mode === m.value && s.chipTextActive]}>{m.label}</Text>
+              </Pressable>
+            ))}
+          </View>
+
+          {/* Effort */}
+          <Text style={s.sectionLabel}>EFFORT</Text>
+          <View style={s.chipRow}>
+            {EFFORTS.map((e) => (
+              <Pressable
+                key={e.value}
+                onPress={() => onUpdate({ effort: line.effort === e.value ? "" : e.value })}
+                style={[s.chip, line.effort === e.value && { backgroundColor: e.color }]}
+              >
+                <Text style={[s.chipText, line.effort === e.value && s.chipTextActive]}>{e.label}</Text>
+              </Pressable>
+            ))}
+          </View>
+
           {/* Modifiers */}
-          <Text style={s.moreLabel}>MODIFIERS</Text>
+          <Text style={s.sectionLabel}>MODIFIERS</Text>
           <View style={s.chipRow}>
             {MODIFIERS.map((m) => {
               const active = line.modifiers.includes(m.value);
@@ -389,16 +440,16 @@ function WorkLineEntry({
                 <Pressable
                   key={m.value}
                   onPress={() => onUpdate({ modifiers: toggleInArray(line.modifiers, m.value) })}
-                  style={[s.toggleChip, active && s.toggleChipActive]}
+                  style={[s.chip, active && s.chipActive]}
                 >
-                  <Text style={[s.toggleChipText, active && s.toggleChipTextActive]}>{m.label}</Text>
+                  <Text style={[s.chipText, active && s.chipTextActive]}>{m.label}</Text>
                 </Pressable>
               );
             })}
           </View>
 
           {/* Equipment */}
-          <Text style={s.moreLabel}>EQUIPMENT</Text>
+          <Text style={s.sectionLabel}>EQUIPMENT</Text>
           <View style={s.chipRow}>
             {EQUIPMENT_OPTIONS.map((eq) => {
               const active = line.equipment.includes(eq.value);
@@ -406,68 +457,68 @@ function WorkLineEntry({
                 <Pressable
                   key={eq.value}
                   onPress={() => onUpdate({ equipment: toggleInArray(line.equipment, eq.value) })}
-                  style={[s.toggleChip, active && s.toggleChipActive]}
+                  style={[s.chip, active && s.chipActive]}
                 >
-                  <Text style={[s.toggleChipText, active && s.toggleChipTextActive]}>{eq.label}</Text>
+                  <Text style={[s.chipText, active && s.chipTextActive]}>{eq.label}</Text>
                 </Pressable>
               );
             })}
           </View>
 
           {/* Breathing */}
-          <Text style={s.moreLabel}>BREATHING</Text>
+          <Text style={s.sectionLabel}>BREATHING</Text>
           <View style={s.chipRow}>
             <Pressable
               onPress={() => onUpdate({ breathing: null })}
-              style={[s.toggleChip, line.breathing == null && s.toggleChipActive]}
+              style={[s.chip, line.breathing == null && s.chipActive]}
             >
-              <Text style={[s.toggleChipText, line.breathing == null && s.toggleChipTextActive]}>Normal</Text>
+              <Text style={[s.chipText, line.breathing == null && s.chipTextActive]}>Normal</Text>
             </Pressable>
             <Pressable
               onPress={() => onUpdate({ breathing: { type: "none" } })}
-              style={[s.toggleChip, line.breathing?.type === "none" && s.toggleChipActive]}
+              style={[s.chip, line.breathing?.type === "none" && s.chipActive]}
             >
-              <Text style={[s.toggleChipText, line.breathing?.type === "none" && s.toggleChipTextActive]}>No breath</Text>
+              <Text style={[s.chipText, line.breathing?.type === "none" && s.chipTextActive]}>No breath</Text>
             </Pressable>
             <Pressable
               onPress={() => onUpdate({ breathing: { type: "every_n", value: line.breathing?.type === "every_n" ? line.breathing.value : 5 } })}
-              style={[s.toggleChip, line.breathing?.type === "every_n" && s.toggleChipActive]}
+              style={[s.chip, line.breathing?.type === "every_n" && s.chipActive]}
             >
-              <Text style={[s.toggleChipText, line.breathing?.type === "every_n" && s.toggleChipTextActive]}>Every N</Text>
+              <Text style={[s.chipText, line.breathing?.type === "every_n" && s.chipTextActive]}>Every N</Text>
             </Pressable>
             <Pressable
               onPress={() => onUpdate({ breathing: { type: "limited", value: line.breathing?.type === "limited" ? line.breathing.value : 1 } })}
-              style={[s.toggleChip, line.breathing?.type === "limited" && s.toggleChipActive]}
+              style={[s.chip, line.breathing?.type === "limited" && s.chipActive]}
             >
-              <Text style={[s.toggleChipText, line.breathing?.type === "limited" && s.toggleChipTextActive]}>Limited</Text>
+              <Text style={[s.chipText, line.breathing?.type === "limited" && s.chipTextActive]}>Limited</Text>
             </Pressable>
           </View>
           {line.breathing?.type === "every_n" && (
-            <View style={s.breathValueRow}>
-              <Text style={s.breathValueLabel}>Breathe every</Text>
+            <View style={s.breathRow}>
+              <Text style={s.breathLabel}>Breathe every</Text>
               <TextInput
                 style={[s.input, { width: 42, textAlign: "center" }]}
                 value={line.breathing.value?.toString() ?? ""}
                 onChangeText={(v) => onUpdate({ breathing: { type: "every_n", value: parseInt(v) || undefined } })}
                 keyboardType="number-pad"
               />
-              <Text style={s.breathValueLabel}>strokes</Text>
+              <Text style={s.breathLabel}>strokes</Text>
             </View>
           )}
           {line.breathing?.type === "limited" && (
-            <View style={s.breathValueRow}>
+            <View style={s.breathRow}>
               <TextInput
                 style={[s.input, { width: 42, textAlign: "center" }]}
                 value={line.breathing.value?.toString() ?? ""}
                 onChangeText={(v) => onUpdate({ breathing: { type: "limited", value: parseInt(v) || undefined } })}
                 keyboardType="number-pad"
               />
-              <Text style={s.breathValueLabel}>breath(s) per 25</Text>
+              <Text style={s.breathLabel}>breath(s) per 25</Text>
             </View>
           )}
 
           {/* Targets */}
-          <Text style={s.moreLabel}>TARGETS</Text>
+          <Text style={s.sectionLabel}>TARGETS</Text>
           <View style={s.targetsRow}>
             <View style={s.targetField}>
               <Text style={s.targetLabel}>Strokes</Text>
@@ -521,46 +572,51 @@ function WorkLineEntry({
   );
 }
 
-// --- Line Entry dispatcher ---
-
+// === LINE ENTRY (dispatches collapsed vs expanded) ===
 function LineEntry({
   line,
   baseTime100,
+  isExpanded,
+  onExpand,
+  onCollapse,
   onUpdate,
   onRemove,
   canRemove,
 }: {
   line: LineInput;
   baseTime100: number;
+  isExpanded: boolean;
+  onExpand: () => void;
+  onCollapse: () => void;
   onUpdate: (u: Partial<LineInput>) => void;
   onRemove: () => void;
   canRemove: boolean;
 }) {
-  if (line.kind === "rest") {
+  if (isExpanded) {
     return (
-      <RestLineEntry
+      <ExpandedLine
         line={line}
+        baseTime100={baseTime100}
         onUpdate={onUpdate}
         onRemove={onRemove}
-        onSwitchToWork={() => onUpdate({ kind: "work" })}
+        onCollapse={onCollapse}
         canRemove={canRemove}
       />
     );
   }
   return (
-    <WorkLineEntry
+    <CollapsedLine
       line={line}
-      baseTime100={baseTime100}
-      onUpdate={onUpdate}
+      onExpand={onExpand}
       onRemove={onRemove}
-      onSwitchToRest={() => onUpdate({ kind: "rest", rest_seconds: "30" })}
       canRemove={canRemove}
     />
   );
 }
 
+// === SET ENTRY ===
 export default function SetEntry({
-  set, index, baseTime100, onUpdate, onRemove, onMoveUp, onMoveDown, onOpenDetails, canRemove, isFirst, isLast,
+  set, index, baseTime100, expandedLineId, onExpandLine, onUpdate, onRemove, onMoveUp, onMoveDown, onOpenDetails, canRemove, isFirst, isLast,
 }: Props) {
   function updateGroup(gid: string, u: Partial<GroupInput>) {
     onUpdate({ groups: set.groups.map((g) => (g.id === gid ? { ...g, ...u } : g)) });
@@ -580,17 +636,26 @@ export default function SetEntry({
     } else if (set.groups.length > 1) {
       onUpdate({ groups: set.groups.filter((g) => g.id !== gid) });
     }
+    if (expandedLineId === lid) onExpandLine(null);
   }
   function addLine(gid: string) {
     const group = set.groups.find((g) => g.id === gid);
-    if (group) updateGroup(gid, { lines: [...group.lines, createEmptyLine()] });
+    if (!group) return;
+    const newLine = createEmptyLine();
+    updateGroup(gid, { lines: [...group.lines, newLine] });
+    onExpandLine(newLine.id);
   }
   function addRestLine(gid: string) {
     const group = set.groups.find((g) => g.id === gid);
-    if (group) updateGroup(gid, { lines: [...group.lines, createRestLine()] });
+    if (!group) return;
+    const newLine = createRestLine();
+    updateGroup(gid, { lines: [...group.lines, newLine] });
+    onExpandLine(newLine.id);
   }
   function addGroup() {
-    onUpdate({ groups: [...set.groups, createEmptyGroup()] });
+    const newGroup = createEmptyGroup();
+    onUpdate({ groups: [...set.groups, newGroup] });
+    onExpandLine(newGroup.lines[0].id);
   }
   function removeGroup(gid: string) {
     if (set.groups.length > 1) {
@@ -635,7 +700,6 @@ export default function SetEntry({
         const rounds = parseInt(group.rounds) || 1;
         return (
           <View key={group.id} style={gi > 0 ? s.groupDivider : undefined}>
-            {/* Rounds selector */}
             <View style={s.roundsRow}>
               <Text style={s.roundsLabel}>{rounds > 1 ? `${rounds}× through` : "1× through"}</Text>
               <View style={s.roundsChips}>
@@ -656,7 +720,6 @@ export default function SetEntry({
               )}
             </View>
 
-            {/* Group bracket */}
             <View style={rounds > 1 ? s.bracketWrap : undefined}>
               {rounds > 1 && <View style={s.bracket} />}
               <View style={{ flex: 1 }}>
@@ -665,17 +728,20 @@ export default function SetEntry({
                     key={line.id}
                     line={line}
                     baseTime100={baseTime100}
+                    isExpanded={expandedLineId === line.id}
+                    onExpand={() => onExpandLine(line.id)}
+                    onCollapse={() => onExpandLine(null)}
                     onUpdate={(u) => updateLine(group.id, line.id, u)}
                     onRemove={() => removeLine(group.id, line.id)}
                     canRemove={group.lines.length > 1 || set.groups.length > 1}
                   />
                 ))}
                 <View style={s.addBtnsRow}>
-                  <Pressable onPress={() => addLine(group.id)} style={s.addLineBtn}>
-                    <Text style={s.addLineText}>+ Line</Text>
+                  <Pressable onPress={() => addLine(group.id)} style={s.addBtn}>
+                    <Text style={s.addBtnText}>+ Line</Text>
                   </Pressable>
-                  <Pressable onPress={() => addRestLine(group.id)} style={s.addLineBtn}>
-                    <Text style={[s.addLineText, { color: colors.muted }]}>+ Rest</Text>
+                  <Pressable onPress={() => addRestLine(group.id)} style={s.addBtn}>
+                    <Text style={[s.addBtnText, { color: colors.muted }]}>+ Rest</Text>
                   </Pressable>
                 </View>
               </View>
@@ -698,7 +764,9 @@ export default function SetEntry({
   );
 }
 
+// === STYLES ===
 const s = StyleSheet.create({
+  // Card
   card: {
     backgroundColor: colors.surface, borderRadius: 18, padding: 16, marginBottom: 10,
     borderWidth: 1, borderColor: colors.border,
@@ -711,6 +779,8 @@ const s = StyleSheet.create({
   setLabel: { fontSize: 10, color: colors.muted, fontWeight: "700", letterSpacing: 1.5 },
   yardage: { fontSize: 12, color: colors.swim[400], fontWeight: "700" },
   remove: { fontSize: 12, color: colors.accent.red, fontWeight: "600" },
+
+  // Groups
   groupDivider: { borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 10, marginTop: 6 },
   roundsRow: { flexDirection: "row", alignItems: "center", marginBottom: 8 },
   roundsLabel: { fontSize: 11, color: colors.swim[400], fontWeight: "700", marginRight: 8 },
@@ -726,94 +796,103 @@ const s = StyleSheet.create({
   bracket: {
     width: 3, backgroundColor: colors.swim[600], borderRadius: 2, marginRight: 10, marginVertical: 4,
   },
-  lineCard: { marginBottom: 6 },
-  inputRow: { flexDirection: "row", alignItems: "center", marginBottom: 6 },
+
+  // Collapsed line
+  collapsedRow: {
+    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
+    paddingVertical: 10, paddingHorizontal: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border,
+  },
+  collapsedLeft: { flexDirection: "row", alignItems: "center", flex: 1, flexWrap: "wrap" },
+  collapsedRight: { flexDirection: "row", alignItems: "center" },
+  collapsedText: { fontSize: 15, fontWeight: "700", color: colors.white },
+  collapsedStroke: { fontWeight: "600", color: colors.swim[400] },
+  collapsedMode: { fontWeight: "600", color: "#a78bfa" },
+  collapsedInterval: { fontSize: 13, color: colors.muted, fontWeight: "500" },
+  collapsedRemove: { marginLeft: 8 },
+  collapsedTags: { flexDirection: "row", marginLeft: 8 },
+  miniTag: {
+    backgroundColor: colors.surfaceLight, borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1,
+    marginRight: 3,
+  },
+  miniTagText: { fontSize: 9, fontWeight: "600", color: colors.swim[400] },
+  effortDotSmall: { width: 8, height: 8, borderRadius: 4, marginRight: 6 },
+  restText: { fontSize: 13, fontWeight: "600", color: colors.muted, fontStyle: "italic" },
+
+  // Expanded line
+  expandedCard: {
+    backgroundColor: colors.surfaceLight, borderRadius: 14, padding: 12, marginVertical: 4,
+  },
+  expandedHeader: {
+    flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 8,
+  },
+  doneBtn: { fontSize: 14, fontWeight: "700", color: colors.swim[500] },
+  repsDistRow: { flexDirection: "row", alignItems: "center", marginBottom: 6, flexWrap: "wrap" },
   input: {
-    backgroundColor: colors.surfaceLight, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 9,
+    backgroundColor: colors.surface, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 7,
     fontSize: 15, fontWeight: "600", color: colors.white,
   },
-  x: { color: colors.muted, fontWeight: "700", marginHorizontal: 6, fontSize: 14 },
-  // Kind toggle (Work/Rest)
-  kindToggle: {
-    paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8,
-    backgroundColor: colors.surfaceLight, marginRight: 4,
+  x: { color: colors.muted, fontWeight: "700", marginHorizontal: 5, fontSize: 13 },
+  inlineChips: { flexDirection: "row", marginLeft: 8, flexWrap: "wrap", flex: 1 },
+
+  // Compact chip rows
+  tightRow: { flexDirection: "row", flexWrap: "wrap", marginBottom: 6, alignItems: "center" },
+  effortIntervalRow: { flexDirection: "row", flexWrap: "wrap", marginBottom: 6, alignItems: "center" },
+  divider: { width: 1, height: 16, backgroundColor: colors.border, marginHorizontal: 6 },
+  tinyChip: {
+    backgroundColor: colors.surface, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4,
+    marginRight: 4, marginBottom: 3,
   },
-  kindToggleActive: { backgroundColor: colors.swim[600] },
-  kindToggleTextActive: { fontSize: 11, fontWeight: "700", color: colors.white },
-  kindToggleTextInactive: { fontSize: 11, fontWeight: "600", color: colors.muted },
-  // Rest line
-  restRow: { flexDirection: "row", alignItems: "center", marginBottom: 6 },
-  restLabel: { color: colors.muted, fontSize: 13, marginLeft: 8 },
-  restChips: { flexDirection: "row", flexWrap: "wrap", marginBottom: 6 },
-  // Distance chips
-  distChips: { flexDirection: "row", flexWrap: "wrap", marginBottom: 6 },
-  distChip: {
-    backgroundColor: colors.surfaceLight, borderRadius: 8, paddingHorizontal: 11, paddingVertical: 5,
-    marginRight: 5, marginBottom: 4,
+  tinyChipText: { fontSize: 11, fontWeight: "600", color: colors.muted },
+
+  // Shared chips (for More section)
+  chipRow: { flexDirection: "row", flexWrap: "wrap", marginBottom: 6 },
+  chip: {
+    backgroundColor: colors.surface, borderRadius: 6, paddingHorizontal: 9, paddingVertical: 4,
+    marginRight: 4, marginBottom: 3,
   },
-  distChipActive: { backgroundColor: colors.swim[600] },
-  distText: { fontSize: 12, fontWeight: "600", color: colors.muted },
-  distTextActive: { color: colors.white },
-  // Stroke + Mode chips
-  strokes: { flexDirection: "row", flexWrap: "wrap", marginBottom: 6 },
-  strokeChip: {
-    backgroundColor: colors.surfaceLight, borderRadius: 8, paddingHorizontal: 9, paddingVertical: 5,
-    marginRight: 4, marginBottom: 4,
-  },
-  strokeActive: { backgroundColor: colors.swim[600] },
-  strokeText: { fontSize: 11, fontWeight: "600", color: colors.muted },
-  strokeTextActive: { color: colors.white },
-  modeActive: { backgroundColor: "#7c3aed" },
-  modeTextActive: { color: colors.white },
-  // Effort chips
-  effortRow: { flexDirection: "row", flexWrap: "wrap", marginBottom: 6 },
-  effortChip: {
-    backgroundColor: colors.surfaceLight, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5,
-    marginRight: 5, marginBottom: 4,
-  },
-  effortChipText: { fontSize: 11, fontWeight: "600", color: colors.muted },
-  effortChipTextActive: { color: colors.white },
-  // Interval/pace
-  paceRow: { flexDirection: "row", alignItems: "flex-start" },
-  paceChips: { flexDirection: "row", flexWrap: "wrap", flex: 1 },
+  chipActive: { backgroundColor: colors.swim[600] },
+  chipText: { fontSize: 11, fontWeight: "600", color: colors.muted },
+  chipTextActive: { color: colors.white },
+  modeChipActive: { backgroundColor: "#7c3aed" },
+
+  // Pace
   paceChip: {
-    backgroundColor: colors.surfaceLight, borderRadius: 8, paddingHorizontal: 9, paddingVertical: 5,
-    marginRight: 5, marginBottom: 5, alignItems: "center", minWidth: 42,
+    backgroundColor: colors.surface, borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3,
+    marginRight: 4, marginBottom: 3, alignItems: "center", minWidth: 38,
   },
-  paceChipActive: { backgroundColor: colors.swim[600] },
-  paceChipLabel: { fontSize: 9, fontWeight: "700", color: colors.muted },
-  paceChipLabelActive: { color: "rgba(255,255,255,0.7)" },
-  paceChipTime: { fontSize: 11, fontWeight: "700", color: colors.white, marginTop: 1 },
-  paceChipTimeActive: { color: colors.white },
+  paceLabel: { fontSize: 8, fontWeight: "700", color: colors.muted },
+  paceLabelActive: { color: "rgba(255,255,255,0.7)" },
+  paceTime: { fontSize: 10, fontWeight: "700", color: colors.white, marginTop: 1 },
+
   // More options
   moreToggle: {
     flexDirection: "row", alignItems: "center", justifyContent: "center",
-    paddingVertical: 6, marginTop: 2,
+    paddingVertical: 4, marginTop: 2,
   },
   moreToggleText: { fontSize: 11, fontWeight: "600", color: colors.muted, marginRight: 6 },
-  moreSection: { marginTop: 4 },
-  moreLabel: {
+  sectionLabel: {
     fontSize: 9, color: colors.muted, fontWeight: "700", letterSpacing: 1.2,
     marginBottom: 6, marginTop: 8,
   },
-  chipRow: { flexDirection: "row", flexWrap: "wrap" },
-  toggleChip: {
-    backgroundColor: colors.surfaceLight, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5,
-    marginRight: 5, marginBottom: 4,
-  },
-  toggleChipActive: { backgroundColor: colors.swim[600] },
-  toggleChipText: { fontSize: 11, fontWeight: "600", color: colors.muted },
-  toggleChipTextActive: { color: colors.white },
-  breathValueRow: { flexDirection: "row", alignItems: "center", marginTop: 4, marginBottom: 4 },
-  breathValueLabel: { fontSize: 12, color: colors.muted, marginHorizontal: 6 },
+
+  // Breathing
+  breathRow: { flexDirection: "row", alignItems: "center", marginTop: 4, marginBottom: 4 },
+  breathLabel: { fontSize: 12, color: colors.muted, marginHorizontal: 6 },
+
+  // Rest
+  restInputRow: { flexDirection: "row", alignItems: "center", marginBottom: 8 },
+  restLabel: { color: colors.muted, fontSize: 13, marginLeft: 8 },
+
   // Targets
   targetsRow: { flexDirection: "row" },
   targetField: { flex: 1, marginRight: 8 },
   targetLabel: { fontSize: 9, color: colors.muted, fontWeight: "700", marginBottom: 4 },
-  // Add line buttons
+
+  // Add buttons
   addBtnsRow: { flexDirection: "row", justifyContent: "center", gap: 16, paddingVertical: 6 },
-  addLineBtn: { paddingVertical: 4, paddingHorizontal: 8 },
-  addLineText: { fontSize: 12, fontWeight: "600", color: colors.swim[400] },
+  addBtn: { paddingVertical: 4, paddingHorizontal: 8 },
+  addBtnText: { fontSize: 12, fontWeight: "600", color: colors.swim[400] },
   addGroupBtn: {
     paddingVertical: 8, alignItems: "center",
     borderTopWidth: 1, borderTopColor: colors.border, marginTop: 4, marginBottom: 4,

@@ -155,27 +155,68 @@ class HealthKitBridge: NSObject {
       innerGroup.enter()
       if let distType = HKQuantityType.quantityType(forIdentifier: .distanceSwimming) {
         let distPred = HKQuery.predicateForObjects(from: workout)
-        let distQuery = HKSampleQuery(sampleType: distType, predicate: distPred, limit: HKObjectQueryNoLimit, sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)]) { _, distSamples, distError in
+        let distQuery = HKSampleQuery(sampleType: distType, predicate: distPred, limit: HKObjectQueryNoLimit, sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)]) { [weak self] _, distSamples, distError in
           print("[HealthKit] distanceSwimming query error: \(distError?.localizedDescription ?? "none")")
-          if let samples = distSamples as? [HKQuantitySample], !samples.isEmpty {
+
+          let processSamples = { (samples: [HKQuantitySample]) in
             let totalYards = samples.reduce(0.0) { $0 + $1.quantity.doubleValue(for: .yard()) }
             print("[HealthKit] distanceSwimming samples: \(samples.count), total: \(totalYards) yards")
-            if totalYards > 0 {
-              result["distance"] = totalYards
-            }
+            if totalYards > 0 { result["distance"] = totalYards }
             result["lapCount"] = samples.count
+
+            // Stroke breakdown by style
+            var strokeBreakdown: [String: Double] = [:]
+            var swolfScores: [Int] = []
+            for sample in samples {
+              let yards = sample.quantity.doubleValue(for: .yard())
+              let duration = sample.endDate.timeIntervalSince(sample.startDate)
+              var styleName = "freestyle"
+              if let meta = sample.metadata,
+                 let styleNum = meta[HKMetadataKeySwimmingStrokeStyle] as? NSNumber {
+                switch styleNum.intValue {
+                  case 1: styleName = "freestyle"
+                  case 2: styleName = "backstroke"
+                  case 3: styleName = "breaststroke"
+                  case 4: styleName = "butterfly"
+                  case 5: styleName = "kickboard"
+                  default: styleName = "mixed"
+                }
+              }
+              strokeBreakdown[styleName, default: 0] += yards
+
+              // Compute per-lap SWOLF (time in seconds + strokes)
+              // We'll pair with stroke samples later; for now use metadata if available
+              if let meta = sample.metadata {
+                if #available(iOS 16.0, *) {
+                  if let swolf = meta[HKMetadataKeySWOLFScore] as? NSNumber {
+                    swolfScores.append(swolf.intValue)
+                  }
+                }
+              }
+            }
+            if !strokeBreakdown.isEmpty {
+              result["strokeBreakdown"] = strokeBreakdown
+            }
+            // Median SWOLF
+            if !swolfScores.isEmpty {
+              let sorted = swolfScores.sorted()
+              let mid = sorted.count / 2
+              let median = sorted.count % 2 == 0
+                ? (sorted[mid - 1] + sorted[mid]) / 2
+                : sorted[mid]
+              result["swolf"] = median
+              print("[HealthKit] Median SWOLF: \(median) from \(swolfScores.count) laps")
+            }
+          }
+
+          if let samples = distSamples as? [HKQuantitySample], !samples.isEmpty {
+            processSamples(samples)
           } else {
             print("[HealthKit] No distanceSwimming samples from workout predicate, trying date range...")
-            // Fallback: query by date range
             let dateRangePred = HKQuery.predicateForSamples(withStart: workout.startDate, end: workout.endDate)
-            let fallbackQuery = HKSampleQuery(sampleType: distType, predicate: dateRangePred, limit: HKObjectQueryNoLimit, sortDescriptors: nil) { _, fallbackSamples, _ in
+            let fallbackQuery = HKSampleQuery(sampleType: distType, predicate: dateRangePred, limit: HKObjectQueryNoLimit, sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)]) { _, fallbackSamples, _ in
               if let samples = fallbackSamples as? [HKQuantitySample], !samples.isEmpty {
-                let totalYards = samples.reduce(0.0) { $0 + $1.quantity.doubleValue(for: .yard()) }
-                print("[HealthKit] distanceSwimming (date fallback): \(samples.count) samples, \(totalYards) yards")
-                if totalYards > 0 {
-                  result["distance"] = totalYards
-                }
-                result["lapCount"] = samples.count
+                processSamples(samples)
               } else {
                 print("[HealthKit] No distanceSwimming samples found at all")
               }

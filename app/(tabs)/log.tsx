@@ -9,7 +9,7 @@ import * as ImagePicker from "expo-image-picker";
 import * as FileSystem from "expo-file-system";
 import FontAwesome from "@expo/vector-icons/FontAwesome";
 import { saveWorkout, getWorkout, updateWorkout, getSettings, StoredWorkout } from "../../lib/storage";
-import { RepDetail } from "../../lib/types";
+import { RepDetail, RepActual } from "../../lib/types";
 import { colors } from "../../lib/theme";
 import SetEntry, { SetInput, createEmptyGroup, createEmptyLine, GroupInput, LineInput } from "../../components/SetEntry";
 import RepDetailModal, { LineInfo } from "../../components/RepDetailModal";
@@ -35,6 +35,7 @@ function createEmptySet(): SetInput {
 }
 
 type RepDetailsMap = Record<string, RepDetail[]>;
+type RepActualsMap = Record<string, RepActual[]>;
 
 export default function LogSwim() {
   const { editId } = useLocalSearchParams<{ editId?: string }>();
@@ -44,11 +45,14 @@ export default function LogSwim() {
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [sets, setSets] = useState<SetInput[]>([createEmptySet()]);
   const [repDetailsMap, setRepDetailsMap] = useState<RepDetailsMap>({});
+  const [repActualsMap, setRepActualsMap] = useState<RepActualsMap>({});
   const [benchmarks, setBenchmarks] = useState<BenchmarkInput[]>([]);
   const [workoutPhotos, setWorkoutPhotos] = useState<string[]>([]);
   const [ocrText, setOcrText] = useState<string | null>(null);
   const [feelingScore, setFeelingScore] = useState(5);
   const [notes, setNotes] = useState("");
+  const [lane, setLane] = useState("");
+  const [coach, setCoach] = useState("");
   const [duration, setDuration] = useState("");
   const [quickMode, setQuickMode] = useState(false);
   const [quickYards, setQuickYards] = useState("");
@@ -56,6 +60,7 @@ export default function LogSwim() {
   const [parsing, setParsing] = useState(false);
   const [baseTime, setBaseTime] = useState(90);
   const [modalSetId, setModalSetId] = useState<string | null>(null);
+  const [expandedLineId, setExpandedLineId] = useState<string | null>(null);
 
   // Load settings
   useFocusEffect(
@@ -83,6 +88,8 @@ export default function LogSwim() {
       setSwimDate(new Date(w.date));
       setFeelingScore(w.feeling_score ?? 5);
       setNotes(w.notes ?? "");
+      setLane(w.lane ?? "");
+      setCoach(w.coach ?? "");
       setDuration(w.duration_minutes != null ? w.duration_minutes.toString() : "");
       const poolIdx = POOL_OPTIONS.findIndex(
         (p) => p.length === w.pool_length && p.unit === w.pool_unit
@@ -128,14 +135,31 @@ export default function LogSwim() {
       }));
       setSets(loadedSets.length > 0 ? loadedSets : [createEmptySet()]);
 
-      // Load rep details
+      // Load rep details and actuals
       const rdMap: RepDetailsMap = {};
+      const raMap: RepActualsMap = {};
       for (const s of w.sets || []) {
         if (s.rep_details && s.rep_details.length > 0) {
           rdMap[s.id] = s.rep_details;
         }
+        // Reconstruct flat actuals array from per-line actuals
+        const flatActuals: RepActual[] = [];
+        for (const g of s.groups || []) {
+          for (const l of g.lines) {
+            if (l.kind === "rest") continue;
+            const wl = l as any;
+            const reps = (wl.reps || 1) * (g.rounds || 1);
+            for (let r = 0; r < reps; r++) {
+              flatActuals.push(wl.actuals?.[r] || { time_seconds: 0 });
+            }
+          }
+        }
+        if (flatActuals.some((a) => a.time_seconds > 0)) {
+          raMap[s.id] = flatActuals;
+        }
       }
       setRepDetailsMap(rdMap);
+      setRepActualsMap(raMap);
 
       // Load photos
       setWorkoutPhotos(w.photos || []);
@@ -383,10 +407,36 @@ export default function LogSwim() {
       })
     : [];
 
-  function handleSaveDetails(details: RepDetail[]) {
+  function handleSaveDetails(details: RepDetail[], newActuals: RepActual[]) {
     if (modalSetId) {
       setRepDetailsMap((m) => ({ ...m, [modalSetId]: details }));
+      // Store actuals that have non-zero times
+      const hasActuals = newActuals.some((a) => a.time_seconds > 0);
+      if (hasActuals) {
+        setRepActualsMap((m) => ({ ...m, [modalSetId]: newActuals }));
+      }
       updateSet(modalSetId, { hasDetails: true });
+
+      // Auto-label line effort when all segments share the same effort
+      const set = sets.find((s) => s.id === modalSetId);
+      if (set) {
+        let repIdx = 0;
+        const updatedGroups = set.groups.map((g) => ({
+          ...g,
+          lines: g.lines.map((line) => {
+            if (line.kind === "rest") return line;
+            const reps = (parseInt(line.reps) || 1) * (parseInt(g.rounds) || 1);
+            const lineDetails = details.slice(repIdx, repIdx + reps);
+            repIdx += reps;
+            const allEfforts = lineDetails.flatMap((d) => d.segments.map((seg) => seg.effort));
+            if (allEfforts.length > 0 && allEfforts.every((e) => e === allEfforts[0])) {
+              return { ...line, effort: allEfforts[0] };
+            }
+            return line;
+          }),
+        }));
+        updateSet(modalSetId, { groups: updatedGroups, hasDetails: true });
+      }
     }
     setModalSetId(null);
   }
@@ -398,39 +448,49 @@ export default function LogSwim() {
     }
     setSaving(true);
     try {
-      const setsData = sets.map((s, i) => ({
-        id: s.id,
-        order_index: i,
-        groups: s.groups.map((g) => ({
-          id: g.id,
-          rounds: parseInt(g.rounds) || 1,
-          lines: g.lines
-            .filter((l) => l.kind === "rest" ? (parseInt(l.rest_seconds) || 0) > 0 : (parseInt(l.distance) || 0) > 0)
-            .map((l): any => {
-              if (l.kind === "rest") {
-                return { kind: "rest", id: l.id, rest_seconds: parseInt(l.rest_seconds) || 0 };
-              }
-              return {
-                kind: "work",
-                id: l.id,
-                reps: parseInt(l.reps) || 1,
-                distance: parseInt(l.distance) || 0,
-                stroke: l.stroke,
-                mode: l.mode !== "swim" ? l.mode : undefined,
-                effort: l.effort || undefined,
-                interval_seconds: l.interval ? parseInt(l.interval) : null,
-                interval_type: l.interval_type !== "fixed" ? l.interval_type : undefined,
-                base_offset: l.base_offset || undefined,
-                modifiers: l.modifiers.length > 0 ? l.modifiers : undefined,
-                equipment: l.equipment.length > 0 ? l.equipment : undefined,
-                breathing: l.breathing || undefined,
-                targets: l.targets || undefined,
-              };
-            }),
-        })).filter((g) => g.lines.length > 0),
-        rep_details: repDetailsMap[s.id] || [],
-        description: s.description || null,
-      })).filter((s) => s.groups.length > 0);
+      const setsData = sets.map((s, i) => {
+        const setActuals = repActualsMap[s.id] || [];
+        let actualsIdx = 0;
+        return {
+          id: s.id,
+          order_index: i,
+          groups: s.groups.map((g) => ({
+            id: g.id,
+            rounds: parseInt(g.rounds) || 1,
+            lines: g.lines
+              .filter((l) => l.kind === "rest" ? (parseInt(l.rest_seconds) || 0) > 0 : (parseInt(l.distance) || 0) > 0)
+              .map((l): any => {
+                if (l.kind === "rest") {
+                  return { kind: "rest", id: l.id, rest_seconds: parseInt(l.rest_seconds) || 0 };
+                }
+                const reps = parseInt(l.reps) || 1;
+                const rounds = parseInt(g.rounds) || 1;
+                const totalReps = reps * rounds;
+                const lineActuals = setActuals.slice(actualsIdx, actualsIdx + totalReps).filter((a) => a.time_seconds > 0);
+                actualsIdx += totalReps;
+                return {
+                  kind: "work",
+                  id: l.id,
+                  reps,
+                  distance: parseInt(l.distance) || 0,
+                  stroke: l.stroke,
+                  mode: l.mode !== "swim" ? l.mode : undefined,
+                  effort: l.effort || undefined,
+                  interval_seconds: l.interval ? parseInt(l.interval) : null,
+                  interval_type: l.interval_type !== "fixed" ? l.interval_type : undefined,
+                  base_offset: l.base_offset || undefined,
+                  modifiers: l.modifiers.length > 0 ? l.modifiers : undefined,
+                  equipment: l.equipment.length > 0 ? l.equipment : undefined,
+                  breathing: l.breathing || undefined,
+                  targets: l.targets || undefined,
+                  actuals: lineActuals.length > 0 ? lineActuals : undefined,
+                };
+              }),
+          })).filter((g) => g.lines.length > 0),
+          rep_details: repDetailsMap[s.id] || [],
+          description: s.description || null,
+        };
+      }).filter((s) => s.groups.length > 0);
 
       // Copy photos to permanent storage
       const savedPhotos: string[] = [];
@@ -452,6 +512,9 @@ export default function LogSwim() {
         pool_unit: pool.unit,
         feeling_score: feelingScore,
         notes: notes || null,
+        base_time_100: baseTime,
+        lane: lane || null,
+        coach: coach || null,
         duration_minutes: duration ? parseInt(duration) : null,
         sets: quickMode ? [] : setsData,
         photos: savedPhotos.length > 0 ? savedPhotos : undefined,
@@ -491,12 +554,15 @@ export default function LogSwim() {
       setQuickYards("");
       setSets([createEmptySet()]);
       setRepDetailsMap({});
+      setRepActualsMap({});
       setBenchmarks([]);
       setWorkoutPhotos([]);
       setOcrText(null);
       setSwimDate(new Date());
       setFeelingScore(5);
       setNotes("");
+      setLane("");
+      setCoach("");
       setDuration("");
 
       Alert.alert(
@@ -520,16 +586,28 @@ export default function LogSwim() {
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
+        {/* Sticky header */}
+        <View style={s.stickyHeader}>
+          <View>
+            <Text style={s.subtitle}>{editingWorkoutId ? "EDIT SWIM" : "NEW SWIM"}</Text>
+            <Text style={s.totalYards}>
+              {totalYards}
+              <Text style={s.totalUnit}> {pool.unit}</Text>
+            </Text>
+          </View>
+          <Pressable
+            onPress={handleSave}
+            disabled={saving || totalYards === 0}
+            style={[s.headerSaveBtn, (saving || totalYards === 0) && { opacity: 0.4 }]}
+          >
+            <Text style={s.headerSaveBtnText}>
+              {saving ? "Saving..." : editingWorkoutId ? "Update" : "Save"}
+            </Text>
+          </Pressable>
+        </View>
+
         <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
           <View style={s.container}>
-            <Text style={s.subtitle}>{editingWorkoutId ? "EDIT SWIM" : "NEW SWIM"}</Text>
-            <View style={s.titleRow}>
-              <Text style={s.title}>{editingWorkoutId ? "Edit" : "Log"}</Text>
-              <Text style={s.totalYards}>
-                {totalYards}
-                <Text style={s.totalUnit}> {pool.unit}</Text>
-              </Text>
-            </View>
 
             {/* Date picker */}
             <Pressable onPress={() => setShowDatePicker(!showDatePicker)} style={s.dateBtn}>
@@ -644,6 +722,8 @@ export default function LogSwim() {
                 set={set}
                 index={index}
                 baseTime100={baseTime}
+                expandedLineId={expandedLineId}
+                onExpandLine={setExpandedLineId}
                 onUpdate={(u) => updateSet(set.id, u)}
                 onRemove={() => removeSet(set.id)}
                 onMoveUp={() => moveSet(set.id, -1)}
@@ -677,15 +757,39 @@ export default function LogSwim() {
               <Text style={s.addSetText}>+ Add Benchmark</Text>
             </Pressable>
 
-            <Text style={s.sectionLabel}>DURATION (MINUTES)</Text>
-            <TextInput
-              style={s.textInput}
-              value={duration}
-              onChangeText={setDuration}
-              keyboardType="number-pad"
-              placeholder="e.g. 60"
-              placeholderTextColor={colors.muted}
-            />
+            <View style={s.inlineFieldsRow}>
+              <View style={s.inlineField}>
+                <Text style={s.sectionLabel}>DURATION (MIN)</Text>
+                <TextInput
+                  style={s.textInput}
+                  value={duration}
+                  onChangeText={setDuration}
+                  keyboardType="number-pad"
+                  placeholder="60"
+                  placeholderTextColor={colors.muted}
+                />
+              </View>
+              <View style={s.inlineField}>
+                <Text style={s.sectionLabel}>LANE</Text>
+                <TextInput
+                  style={s.textInput}
+                  value={lane}
+                  onChangeText={setLane}
+                  placeholder="e.g. 3"
+                  placeholderTextColor={colors.muted}
+                />
+              </View>
+              <View style={[s.inlineField, { flex: 2 }]}>
+                <Text style={s.sectionLabel}>COACH</Text>
+                <TextInput
+                  style={s.textInput}
+                  value={coach}
+                  onChangeText={setCoach}
+                  placeholder="e.g. Mike"
+                  placeholderTextColor={colors.muted}
+                />
+              </View>
+            </View>
 
             <FeelingSlider value={feelingScore} onChange={setFeelingScore} />
 
@@ -746,6 +850,7 @@ export default function LogSwim() {
           poolLength={pool.length}
           baseTime100={baseTime}
           repDetails={repDetailsMap[modalSet.id] || []}
+          repActuals={repActualsMap[modalSet.id] || []}
           onSave={handleSaveDetails}
           onClose={() => setModalSetId(null)}
         />
@@ -758,11 +863,16 @@ const s = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
   container: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 120 },
   subtitle: { fontSize: 11, color: colors.muted, fontWeight: "700", letterSpacing: 2 },
-  titleRow: {
-    flexDirection: "row", justifyContent: "space-between", alignItems: "baseline", marginBottom: 20,
+  stickyHeader: {
+    flexDirection: "row", justifyContent: "space-between", alignItems: "center",
+    paddingHorizontal: 20, paddingVertical: 12,
+    borderBottomWidth: 1, borderBottomColor: colors.border,
   },
-  title: { fontSize: 30, fontWeight: "800", color: colors.white },
-  totalYards: { fontSize: 22, fontWeight: "800", color: colors.swim[400] },
+  totalYards: { fontSize: 28, fontWeight: "800", color: colors.swim[400] },
+  headerSaveBtn: {
+    backgroundColor: colors.swim[600], borderRadius: 12, paddingHorizontal: 20, paddingVertical: 10,
+  },
+  headerSaveBtnText: { color: colors.white, fontSize: 15, fontWeight: "700" },
   totalUnit: { fontSize: 13, fontWeight: "400", color: colors.muted },
   sectionLabel: {
     fontSize: 10, color: colors.muted, fontWeight: "700", letterSpacing: 1.5, marginBottom: 10,
@@ -780,6 +890,8 @@ const s = StyleSheet.create({
     paddingVertical: 14, alignItems: "center", marginBottom: 24,
   },
   addSetText: { color: colors.muted, fontWeight: "600", fontSize: 14 },
+  inlineFieldsRow: { flexDirection: "row", gap: 10, marginBottom: 8 },
+  inlineField: { flex: 1 },
   textInput: {
     backgroundColor: colors.surface, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12,
     fontSize: 15, color: colors.white, marginBottom: 24, borderWidth: 1, borderColor: colors.border,

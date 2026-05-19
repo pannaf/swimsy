@@ -125,6 +125,9 @@ export interface Workout {
   feeling_score: number;
   notes: string | null;
   duration_minutes: number | null;
+  base_time_100: number | null;  // base pace used for this workout (seconds per 100)
+  lane: string | null;           // lane number or name
+  coach: string | null;          // coach name
   created_at: string;
   sets?: SwimSet[];
   benchmarks?: Benchmark[];
