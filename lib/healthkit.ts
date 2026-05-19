@@ -21,6 +21,7 @@ export interface HealthSwimData {
   poolLengthYards: number | null;
   swolf: number | null;
   strokeBreakdown: Record<string, number> | null;
+  hrSamples: { t: number; bpm: number }[] | null;
 }
 
 export function isAvailable(): boolean {
@@ -65,6 +66,7 @@ export async function getSwimDataForDate(date: string): Promise<HealthSwimData |
       poolLengthYards: data.poolLengthYards ?? null,
       swolf: data.swolf ?? null,
       strokeBreakdown: data.strokeBreakdown ?? null,
+      hrSamples: data.hrSamples ?? null,
     };
   } catch {
     return null;

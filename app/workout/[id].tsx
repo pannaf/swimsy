@@ -6,6 +6,7 @@ import { getWorkout, getWorkouts, deleteWorkout, getSettings, StoredWorkout } fr
 import { Effort, WorkLine, SetLine, SwimSet } from "../../lib/types";
 import { colors } from "../../lib/theme";
 import { isAvailable, requestPermissions, getSwimDataForDate, HealthSwimData } from "../../lib/healthkit";
+import HeartRateChart from "../../components/HeartRateChart";
 import { isConnected as isWhoopConnected, getDataForDate as getWhoopData, WhoopDayData, ZoneDurations } from "../../lib/whoop";
 
 const EFFORT_COLORS: Record<Effort, string> = {
@@ -510,18 +511,15 @@ export default function WorkoutDetail() {
                 </View>
               )}
 
-              {/* Stroke breakdown */}
-              {healthData.strokeBreakdown && Object.keys(healthData.strokeBreakdown).length > 0 && (
-                <View style={{ marginTop: 8, marginBottom: 8 }}>
-                  {Object.entries(healthData.strokeBreakdown)
-                    .sort(([, a], [, b]) => (b as number) - (a as number))
-                    .map(([stroke, yards]) => (
-                      <View key={stroke} style={s.strokeBreakdownRow}>
-                        <Text style={s.strokeBreakdownName}>{stroke}</Text>
-                        <Text style={s.strokeBreakdownYards}>{Math.round(yards as number)}</Text>
-                      </View>
-                    ))}
-                </View>
+              {/* HR Chart + Zones */}
+              {healthData.hrSamples && healthData.hrSamples.length > 1 && (
+                <>
+                  <Text style={[s.bdTitle, { marginTop: 16 }]}>HEART RATE</Text>
+                  <HeartRateChart
+                    samples={healthData.hrSamples}
+                    restingHR={healthData.restingHeartRate ?? undefined}
+                  />
+                </>
               )}
               <View style={s.divider} />
             </>
@@ -1040,12 +1038,6 @@ const s = StyleSheet.create({
   },
   hrNum: { fontSize: 22, fontWeight: "700", color: colors.white },
   hrLabel: { fontSize: 12, fontWeight: "500", color: "rgba(255,255,255,0.35)", marginRight: 12 },
-  strokeBreakdownRow: {
-    flexDirection: "row", justifyContent: "space-between", paddingVertical: 6,
-    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "rgba(255,255,255,0.06)",
-  },
-  strokeBreakdownName: { fontSize: 14, fontWeight: "600", color: "rgba(255,255,255,0.6)", textTransform: "capitalize" },
-  strokeBreakdownYards: { fontSize: 14, fontWeight: "700", color: colors.white },
   whoopHeroRow: {
     flexDirection: "row", justifyContent: "center", gap: 40, marginBottom: 16,
   },

@@ -251,15 +251,26 @@ class HealthKitBridge: NSObject {
         innerGroup.leave()
       }
 
-      // Heart rate during swim
+      // Heart rate during swim — return raw samples for chart + zone computation
       innerGroup.enter()
       let hrType = HKQuantityType.quantityType(forIdentifier: .heartRate)!
       let hrPred = HKQuery.predicateForSamples(withStart: workout.startDate, end: workout.endDate)
-      let hrQuery = HKSampleQuery(sampleType: hrType, predicate: hrPred, limit: HKObjectQueryNoLimit, sortDescriptors: nil) { _, hrSamples, _ in
+      let hrQuery = HKSampleQuery(sampleType: hrType, predicate: hrPred, limit: HKObjectQueryNoLimit, sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)]) { _, hrSamples, _ in
         if let hrs = hrSamples as? [HKQuantitySample], !hrs.isEmpty {
           let values = hrs.map { $0.quantity.doubleValue(for: HKUnit(from: "count/min")) }
           result["avgHeartRate"] = Int(values.reduce(0, +) / Double(values.count))
           result["maxHeartRate"] = Int(values.max() ?? 0)
+
+          // Return raw samples for chart (timestamp as seconds from workout start, bpm)
+          let workoutStart = workout.startDate.timeIntervalSince1970
+          let samples: [[String: Any]] = hrs.map { sample in
+            return [
+              "t": sample.startDate.timeIntervalSince1970 - workoutStart,
+              "bpm": Int(sample.quantity.doubleValue(for: HKUnit(from: "count/min"))),
+            ]
+          }
+          result["hrSamples"] = samples
+          print("[HealthKit] Returning \(samples.count) HR samples for chart")
         }
         innerGroup.leave()
       }
