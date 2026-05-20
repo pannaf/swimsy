@@ -6,6 +6,7 @@ interface Props {
   value: number | null;
   onChange: (seconds: number | null) => void;
   style?: object;
+  placeholder?: string;
 }
 
 function secondsToDisplay(sec: number | null): string {
@@ -39,7 +40,7 @@ function parseTime(text: string): number | null {
   return n;
 }
 
-export default function TimeInput({ value, onChange, style }: Props) {
+export default function TimeInput({ value, onChange, style, placeholder }: Props) {
   const [text, setText] = useState("");
   const [focused, setFocused] = useState(false);
   const prevValue = useRef(value);
@@ -57,6 +58,17 @@ export default function TimeInput({ value, onChange, style }: Props) {
     setText(secondsToDisplay(value));
   }
 
+  function handleChangeText(newText: string) {
+    setText(newText);
+    // Eagerly parse and notify parent so value is captured even if blur
+    // fires late (e.g. user taps Save right after typing)
+    const parsed = parseTime(newText);
+    if (parsed !== prevValue.current) {
+      onChange(parsed);
+      prevValue.current = parsed;
+    }
+  }
+
   function handleBlur() {
     setFocused(false);
     const parsed = parseTime(text);
@@ -69,10 +81,10 @@ export default function TimeInput({ value, onChange, style }: Props) {
     <TextInput
       style={[s.input, style]}
       value={focused ? text : secondsToDisplay(value)}
-      onChangeText={setText}
+      onChangeText={handleChangeText}
       onFocus={handleFocus}
       onBlur={handleBlur}
-      placeholder=":00"
+      placeholder={placeholder ?? ":00"}
       placeholderTextColor={colors.muted}
       keyboardType="numbers-and-punctuation"
       returnKeyType="done"

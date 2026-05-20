@@ -4,6 +4,22 @@ console.log("NativeModules available:", Object.keys(NativeModules).filter(k => k
 const { HealthKitBridge } = NativeModules;
 console.log("HealthKitBridge:", HealthKitBridge ? "loaded" : "null");
 
+export interface HealthLap {
+  startTime: number;   // seconds from workout start
+  endTime: number;     // seconds from workout start
+  duration: number;    // seconds
+  distanceYards: number;
+  strokeStyle: string;
+  strokeCount?: number;
+  swolf?: number;
+}
+
+export interface WorkoutEvent {
+  type: 'segment' | 'pause' | 'resume' | 'lap' | 'other';
+  startTime: number;  // seconds from workout start
+  endTime: number;
+}
+
 export interface HealthSwimData {
   startDate: string;
   endDate: string;
@@ -22,6 +38,8 @@ export interface HealthSwimData {
   swolf: number | null;
   strokeBreakdown: Record<string, number> | null;
   hrSamples: { t: number; bpm: number }[] | null;
+  laps: HealthLap[] | null;
+  workoutEvents: WorkoutEvent[] | null;
 }
 
 export function isAvailable(): boolean {
@@ -67,6 +85,8 @@ export async function getSwimDataForDate(date: string): Promise<HealthSwimData |
       swolf: data.swolf ?? null,
       strokeBreakdown: data.strokeBreakdown ?? null,
       hrSamples: data.hrSamples ?? null,
+      laps: data.laps ?? null,
+      workoutEvents: data.workoutEvents ?? null,
     };
   } catch {
     return null;

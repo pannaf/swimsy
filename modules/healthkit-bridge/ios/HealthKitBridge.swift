@@ -149,6 +149,33 @@ class HealthKitBridge: NSObject {
         print("[HealthKit] Using totalSwimmingStrokeCount: \(Int(totalStrokes))")
       }
 
+      // Extract workout events (segments/pauses) for rest detection
+      var segments: [[String: Any]] = []
+      if let events = workout.workoutEvents {
+        let workoutStart = workout.startDate.timeIntervalSince1970
+        for event in events {
+          var eventDict: [String: Any] = [
+            "startTime": event.dateInterval.start.timeIntervalSince1970 - workoutStart,
+            "endTime": event.dateInterval.end.timeIntervalSince1970 - workoutStart,
+          ]
+          switch event.type {
+          case .segment:
+            eventDict["type"] = "segment"
+          case .pause:
+            eventDict["type"] = "pause"
+          case .resume:
+            eventDict["type"] = "resume"
+          case .lap:
+            eventDict["type"] = "lap"
+          default:
+            eventDict["type"] = "other"
+          }
+          segments.append(eventDict)
+        }
+        result["workoutEvents"] = segments
+        print("[HealthKit] Workout events: \(segments.count) (\(segments.filter { ($0["type"] as? String) == "segment" }.count) segments)")
+      }
+
       let innerGroup = DispatchGroup()
 
       // Query distanceSwimming samples associated with this workout
@@ -158,22 +185,31 @@ class HealthKitBridge: NSObject {
         let distQuery = HKSampleQuery(sampleType: distType, predicate: distPred, limit: HKObjectQueryNoLimit, sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)]) { [weak self] _, distSamples, distError in
           print("[HealthKit] distanceSwimming query error: \(distError?.localizedDescription ?? "none")")
 
+          let workoutStart = workout.startDate.timeIntervalSince1970
+
           let processSamples = { (samples: [HKQuantitySample]) in
             let totalYards = samples.reduce(0.0) { $0 + $1.quantity.doubleValue(for: .yard()) }
             print("[HealthKit] distanceSwimming samples: \(samples.count), total: \(totalYards) yards")
             if totalYards > 0 { result["distance"] = totalYards }
             result["lapCount"] = samples.count
 
-            // Stroke breakdown by style
+            // Build per-lap array with timing data
+            var laps: [[String: Any]] = []
             var strokeBreakdown: [String: Double] = [:]
             var swolfScores: [Int] = []
-            for sample in samples {
+
+            for (i, sample) in samples.enumerated() {
               let yards = sample.quantity.doubleValue(for: .yard())
+              let startTime = sample.startDate.timeIntervalSince1970 - workoutStart
+              let endTime = sample.endDate.timeIntervalSince1970 - workoutStart
               let duration = sample.endDate.timeIntervalSince(sample.startDate)
+
               var styleName = "freestyle"
+              var styleNum = 0
               if let meta = sample.metadata,
-                 let styleNum = meta[HKMetadataKeySwimmingStrokeStyle] as? NSNumber {
-                switch styleNum.intValue {
+                 let sn = meta[HKMetadataKeySwimmingStrokeStyle] as? NSNumber {
+                styleNum = sn.intValue
+                switch styleNum {
                   case 1: styleName = "freestyle"
                   case 2: styleName = "backstroke"
                   case 3: styleName = "breaststroke"
@@ -184,16 +220,30 @@ class HealthKitBridge: NSObject {
               }
               strokeBreakdown[styleName, default: 0] += yards
 
-              // Compute per-lap SWOLF (time in seconds + strokes)
-              // We'll pair with stroke samples later; for now use metadata if available
+              var lapDict: [String: Any] = [
+                "startTime": startTime,
+                "endTime": endTime,
+                "duration": duration,
+                "distanceYards": yards,
+                "strokeStyle": styleName,
+              ]
+
+              // SWOLF per lap
               if let meta = sample.metadata {
                 if #available(iOS 16.0, *) {
                   if let swolf = meta[HKMetadataKeySWOLFScore] as? NSNumber {
                     swolfScores.append(swolf.intValue)
+                    lapDict["swolf"] = swolf.intValue
                   }
                 }
               }
+
+              laps.append(lapDict)
             }
+
+            result["laps"] = laps
+            print("[HealthKit] Returning \(laps.count) per-lap records")
+
             if !strokeBreakdown.isEmpty {
               result["strokeBreakdown"] = strokeBreakdown
             }
@@ -236,11 +286,36 @@ class HealthKitBridge: NSObject {
       innerGroup.enter()
       if let strokeType = HKQuantityType.quantityType(forIdentifier: .swimmingStrokeCount) {
         let strokePred = HKQuery.predicateForObjects(from: workout)
-        let strokeQuery = HKSampleQuery(sampleType: strokeType, predicate: strokePred, limit: HKObjectQueryNoLimit, sortDescriptors: nil) { _, strokeSamples, _ in
+        let strokeQuery = HKSampleQuery(sampleType: strokeType, predicate: strokePred, limit: HKObjectQueryNoLimit, sortDescriptors: [NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)]) { _, strokeSamples, _ in
           if let samples = strokeSamples as? [HKQuantitySample], !samples.isEmpty {
             let total = samples.reduce(0.0) { $0 + $1.quantity.doubleValue(for: .count()) }
             result["totalStrokes"] = Int(total)
             print("[HealthKit] strokeCount samples: \(samples.count), total: \(Int(total))")
+
+            // Attach per-lap stroke counts by matching timestamps
+            let workoutStart = workout.startDate.timeIntervalSince1970
+            if var laps = result["laps"] as? [[String: Any]] {
+              for strokeSample in samples {
+                let sStart = strokeSample.startDate.timeIntervalSince1970 - workoutStart
+                let strokes = Int(strokeSample.quantity.doubleValue(for: .count()))
+                // Find the lap with the closest start time
+                var bestIdx = -1
+                var bestDiff = Double.greatestFiniteMagnitude
+                for (i, lap) in laps.enumerated() {
+                  if let lapStart = lap["startTime"] as? Double {
+                    let diff = abs(lapStart - sStart)
+                    if diff < bestDiff {
+                      bestDiff = diff
+                      bestIdx = i
+                    }
+                  }
+                }
+                if bestIdx >= 0 && bestDiff < 5.0 {
+                  laps[bestIdx]["strokeCount"] = strokes
+                }
+              }
+              result["laps"] = laps
+            }
           } else {
             print("[HealthKit] No stroke samples from workout predicate")
           }

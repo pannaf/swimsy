@@ -4,8 +4,8 @@ export type Stroke = 'free' | 'back' | 'breast' | 'fly' | 'IM' | 'mixed' | 'choi
   | 'kick' | 'drill';  // deprecated: use Mode instead. kept for existing workout compat
 export type Mode = 'swim' | 'kick' | 'drill' | 'pull' | 'scull';
 export type Effort = 'easy' | 'moderate' | 'fast' | 'sprint';
-export type LineModifier = 'build' | 'descend' | 'ascend' | 'negative_split' | 'positive_split' | 'broken';
-export type Equipment = 'fins' | 'paddles' | 'buoy' | 'kickboard' | 'snorkel' | 'band';
+export type LineModifier = 'build' | 'descend' | 'ascend' | 'negative_split' | 'positive_split' | 'broken' | 'lane_leader';
+export type Equipment = 'fins' | 'paddles' | 'buoy' | 'kickboard' | 'snorkel' | 'band' | 'drag_suit';
 export type IntervalType = 'fixed' | 'base' | 'rest';
 export type BenchmarkType = 'test_set' | 'time_trial' | 'custom';
 

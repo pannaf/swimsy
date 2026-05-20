@@ -5,7 +5,9 @@ import FontAwesome from "@expo/vector-icons/FontAwesome";
 import { getWorkout, getWorkouts, deleteWorkout, getSettings, StoredWorkout } from "../../lib/storage";
 import { Effort, WorkLine, SetLine, SwimSet } from "../../lib/types";
 import { colors } from "../../lib/theme";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { isAvailable, requestPermissions, getSwimDataForDate, HealthSwimData } from "../../lib/healthkit";
+import { correlateLapsToSets, separateSwimAndRest, SetCorrelation, LapWithRest, lapsNeededForSet } from "../../lib/lapCorrelation";
 import HeartRateChart from "../../components/HeartRateChart";
 import { isConnected as isWhoopConnected, getDataForDate as getWhoopData, WhoopDayData, ZoneDurations } from "../../lib/whoop";
 
@@ -33,6 +35,10 @@ export default function WorkoutDetail() {
   const [allIds, setAllIds] = useState<string[]>([]);
   const [baseTime100, setBaseTime100] = useState(90);
   const [breakdownPage, setBreakdownPage] = useState(0);
+  const [lapCorrelations, setLapCorrelations] = useState<SetCorrelation[]>([]);
+  const [setLapStarts, setSetLapStarts] = useState<Record<string, number>>({});
+  const [showLapTimeline, setShowLapTimeline] = useState(false);
+  const [processedLaps, setProcessedLaps] = useState<LapWithRest[]>([]);
 
   // Sync if navigated to from outside
   useEffect(() => { setCurrentId(routeId); }, [routeId]);
@@ -50,6 +56,53 @@ export default function WorkoutDetail() {
       }
     });
   }, [currentId]);
+
+  // Load saved per-set lap starts
+  useEffect(() => {
+    AsyncStorage.getItem(`setLapStarts:${currentId}`).then((v) => {
+      if (v) setSetLapStarts(JSON.parse(v));
+      else setSetLapStarts({});
+    });
+  }, [currentId]);
+
+  // Compute lap correlations when health data or per-set starts change
+  useEffect(() => {
+    if (workout?.sets && healthData?.laps && healthData.laps.length > 0) {
+      const processed = separateSwimAndRest(healthData.laps, healthData.workoutEvents);
+      setProcessedLaps(processed);
+      const corr = correlateLapsToSets(
+        healthData.laps,
+        healthData.workoutEvents,
+        workout.sets,
+        workout.pool_length || 25,
+        setLapStarts
+      );
+      setLapCorrelations(corr);
+    } else {
+      setLapCorrelations([]);
+      setProcessedLaps([]);
+    }
+  }, [workout, healthData, setLapStarts]);
+
+  function adjustSetStart(setId: string, delta: number) {
+    const maxLap = processedLaps.length - 1;
+    const corr = lapCorrelations.find((c) => {
+      const set = workout?.sets?.[c.setIndex];
+      return set?.id === setId;
+    });
+    const currentStart = corr?.startLap ?? 0;
+    const newStart = Math.max(0, Math.min(maxLap, currentStart + delta));
+    const updated = { ...setLapStarts, [setId]: newStart };
+    setSetLapStarts(updated);
+    AsyncStorage.setItem(`setLapStarts:${currentId}`, JSON.stringify(updated));
+  }
+
+  function resetSetStart(setId: string) {
+    const updated = { ...setLapStarts };
+    delete updated[setId];
+    setSetLapStarts(updated);
+    AsyncStorage.setItem(`setLapStarts:${currentId}`, JSON.stringify(updated));
+  }
 
   async function fetchHealthData(date: string) {
     if (!isAvailable()) return;
@@ -102,6 +155,24 @@ export default function WorkoutDetail() {
             <Text style={{ color: colors.swim[500], fontSize: 17 }}>{"\u276E"} Back</Text>
           </Pressable>
         ),
+        headerTitle: () => {
+          const idx = allIds.indexOf(currentId);
+          const prevId = allIds.length > 1 && idx < allIds.length - 1 ? allIds[idx + 1] : null;
+          const nextId = allIds.length > 1 && idx > 0 ? allIds[idx - 1] : null;
+          return (
+            <View style={s.dateNav}>
+              <Pressable disabled={!prevId} onPress={() => prevId && setCurrentId(prevId)} hitSlop={16}>
+                <FontAwesome name="chevron-left" size={10} color={prevId ? "rgba(255,255,255,0.4)" : "rgba(255,255,255,0.1)"} />
+              </Pressable>
+              <Text style={s.dateText}>
+                {new Date(workout.date).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
+              </Text>
+              <Pressable disabled={!nextId} onPress={() => nextId && setCurrentId(nextId)} hitSlop={16}>
+                <FontAwesome name="chevron-right" size={10} color={nextId ? "rgba(255,255,255,0.4)" : "rgba(255,255,255,0.1)"} />
+              </Pressable>
+            </View>
+          );
+        },
         headerRight: () => (
           <Pressable onPress={() => router.push(`/(tabs)/log?editId=${currentId}`)} style={{ flexDirection: "row", alignItems: "center" }}>
             <FontAwesome name="pencil" size={14} color={colors.swim[500]} />
@@ -112,26 +183,6 @@ export default function WorkoutDetail() {
     />
     <ScrollView style={s.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
       <View style={s.container}>
-        {/* Date nav */}
-        {(() => {
-          const idx = allIds.indexOf(currentId);
-          const prevId = allIds.length > 1 && idx < allIds.length - 1 ? allIds[idx + 1] : null;
-          const nextId = allIds.length > 1 && idx > 0 ? allIds[idx - 1] : null;
-          return (
-            <View style={s.dateNav}>
-              <Pressable disabled={!prevId} onPress={() => prevId && setCurrentId(prevId)} hitSlop={16}>
-                <FontAwesome name="chevron-left" size={12} color={prevId ? "rgba(255,255,255,0.4)" : "rgba(255,255,255,0.1)"} />
-              </Pressable>
-              <Text style={s.dateText}>
-                {new Date(workout.date).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
-              </Text>
-              <Pressable disabled={!nextId} onPress={() => nextId && setCurrentId(nextId)} hitSlop={16}>
-                <FontAwesome name="chevron-right" size={12} color={nextId ? "rgba(255,255,255,0.4)" : "rgba(255,255,255,0.1)"} />
-              </Pressable>
-            </View>
-          );
-        })()}
-
         {/* Hero number */}
         <Text style={s.heroNum}>{workout.total_yards}</Text>
         <Text style={s.heroUnit}>{workout.pool_unit}</Text>
@@ -176,7 +227,7 @@ export default function WorkoutDetail() {
         {/* Workout Breakdown */}
         {workout.sets && workout.sets.length > 0 && (() => {
           // Collect all work lines with their yardage
-          type LineWithYards = { yards: number; effort?: Effort; interval: number | null; distance: number };
+          type LineWithYards = { yards: number; effort?: Effort; interval: number | null; distance: number; equipment?: string[]; isLaneLeader?: boolean };
           const allWorkLines: LineWithYards[] = [];
           for (const set of workout.sets) {
             const repDetails = set.rep_details || [];
@@ -201,12 +252,14 @@ export default function WorkoutDetail() {
                   cycleEfforts = expanded;
                 }
 
+                const lineEquipment = wl.equipment || [];
+                const lineIsLaneLeader = wl.modifiers?.includes("lane_leader") || false;
+
                 for (let r = 0; r < totalReps; r++) {
                   // Priority: rep_details segments > rep_pattern cycle > line effort
                   const rd = repDetails[lineRdStart + r];
                   let repEffort: Effort | undefined;
                   if (rd?.segments?.length > 0) {
-                    // Use dominant effort from segments (most common, or first)
                     const segEfforts = rd.segments.map((seg) => seg.effort);
                     repEffort = segEfforts[0];
                   } else if (cycleEfforts) {
@@ -219,6 +272,8 @@ export default function WorkoutDetail() {
                     effort: repEffort,
                     interval: wl.interval_seconds,
                     distance: wl.distance,
+                    equipment: lineEquipment,
+                    isLaneLeader: lineIsLaneLeader,
                   });
                 }
               }
@@ -244,10 +299,12 @@ export default function WorkoutDetail() {
             "base": { label: "On Base", yards: 0, maxConsec: 0 },
             "base+5": { label: "Base +5", yards: 0, maxConsec: 0 },
             "base+10": { label: "Base +10", yards: 0, maxConsec: 0 },
+            "other": { label: "Other", yards: 0, maxConsec: 0 },
+            "none": { label: "No Interval", yards: 0, maxConsec: 0 },
           };
 
-          function bucketKey(interval: number | null, distance: number): string | null {
-            if (interval == null || interval <= 0) return null;
+          function bucketKey(interval: number | null, distance: number): string {
+            if (interval == null || interval <= 0) return "none";
             const base = baseFor(distance);
             const diff = interval - base;
             if (diff === -10) return "base-10";
@@ -255,10 +312,10 @@ export default function WorkoutDetail() {
             if (diff === 0) return "base";
             if (diff === 5) return "base+5";
             if (diff === 10) return "base+10";
-            return null;
+            return "other";
           }
 
-          // Compute per-set consecutive streaks
+          // Compute totals and per-set consecutive streaks
           for (const set of workout.sets) {
             const setLines: LineWithYards[] = [];
             const rdForSet = set.rep_details || [];
@@ -271,26 +328,11 @@ export default function WorkoutDetail() {
                 const totalReps = wl.reps * rounds;
                 const lineRdStart = rdIdx2;
                 rdIdx2 += totalReps;
-                let cycleEfforts: (Effort | undefined)[] | null = null;
-                if (wl.rep_pattern?.cycle && wl.rep_pattern.cycle.length > 0) {
-                  const expanded: (Effort | undefined)[] = [];
-                  for (const entry of wl.rep_pattern.cycle) {
-                    const count = entry.count || 1;
-                    for (let c = 0; c < count; c++) expanded.push(entry.effort);
-                  }
-                  cycleEfforts = expanded;
-                }
                 for (let r = 0; r < totalReps; r++) {
+                  // Use per-rep interval from rep_details if available, otherwise line interval
                   const rd = rdForSet[lineRdStart + r];
-                  let repEffort: Effort | undefined;
-                  if (rd?.segments?.length > 0) {
-                    repEffort = rd.segments[0].effort;
-                  } else if (cycleEfforts) {
-                    repEffort = cycleEfforts[r % cycleEfforts.length];
-                  } else {
-                    repEffort = wl.effort as Effort | undefined;
-                  }
-                  setLines.push({ yards: wl.distance, effort: repEffort, interval: wl.interval_seconds, distance: wl.distance });
+                  const repInterval = rd?.interval != null ? rd.interval : wl.interval_seconds;
+                  setLines.push({ yards: wl.distance, effort: undefined, interval: repInterval, distance: wl.distance });
                 }
               }
             }
@@ -299,12 +341,9 @@ export default function WorkoutDetail() {
             const streaks: Record<string, number> = {};
             for (const l of setLines) {
               const key = bucketKey(l.interval, l.distance);
-              if (key) {
-                buckets[key].yards += l.yards;
-                streaks[key] = (streaks[key] || 0) + l.yards;
-                buckets[key].maxConsec = Math.max(buckets[key].maxConsec, streaks[key]);
-              }
-              // Reset streaks for other buckets
+              buckets[key].yards += l.yards;
+              streaks[key] = (streaks[key] || 0) + l.yards;
+              buckets[key].maxConsec = Math.max(buckets[key].maxConsec, streaks[key]);
               for (const bk of Object.keys(buckets)) {
                 if (bk !== key) streaks[bk] = 0;
               }
@@ -390,6 +429,97 @@ export default function WorkoutDetail() {
             )});
           }
 
+          // Equipment breakdown
+          const equipYards: Record<string, number> = {};
+          for (const l of allWorkLines) {
+            if (l.equipment && l.equipment.length > 0) {
+              for (const eq of l.equipment) {
+                equipYards[eq] = (equipYards[eq] || 0) + l.yards;
+              }
+            }
+          }
+          const EQUIP_COLORS: Record<string, string> = {
+            fins: "#3b82f6",
+            paddles: "#f97316",
+            buoy: colors.accent.yellow,
+            kickboard: colors.accent.green,
+            snorkel: "#8b5cf6",
+            band: colors.accent.red,
+            drag_suit: "#ec4899",
+          };
+          const activeEquip = Object.entries(equipYards)
+            .filter(([, y]) => y > 0)
+            .sort((a, b) => b[1] - a[1]);
+
+          if (activeEquip.length > 0) {
+            cards.push({ key: "equipment", node: (
+              <View>
+                <Text style={s.bdTitle}>EQUIPMENT</Text>
+                {activeEquip.map(([equip, yards]) => {
+                  const pct = (yards / totalWorkoutYards) * 100;
+                  const barColor = EQUIP_COLORS[equip] || colors.muted;
+                  return (
+                    <View key={equip} style={s.bdRow}>
+                      <View style={s.bdBarWrap}>
+                        <View style={s.bdBarTrack}>
+                          <View style={[s.bdBarFill, { width: `${pct}%` as any, backgroundColor: barColor }]} />
+                        </View>
+                      </View>
+                      <View style={s.bdMeta}>
+                        <Text style={s.bdLabel}>{equip.replace(/_/g, " ")}</Text>
+                        <View style={s.bdNums}>
+                          <Text style={s.bdYards}>{yards}</Text>
+                          <Text style={s.bdPct}>{Math.round(pct)}%</Text>
+                        </View>
+                      </View>
+                    </View>
+                  );
+                })}
+              </View>
+            )});
+          }
+
+          // Lane leader breakdown
+          const laneLeaderYards = allWorkLines.filter((l) => l.isLaneLeader).reduce((s, l) => s + l.yards, 0);
+          if (laneLeaderYards > 0) {
+            const llPct = (laneLeaderYards / totalWorkoutYards) * 100;
+            const notLeaderYards = totalWorkoutYards - laneLeaderYards;
+            const notPct = (notLeaderYards / totalWorkoutYards) * 100;
+            cards.push({ key: "lane_leader", node: (
+              <View>
+                <Text style={s.bdTitle}>LANE LEADER</Text>
+                <View style={s.bdRow}>
+                  <View style={s.bdBarWrap}>
+                    <View style={s.bdBarTrack}>
+                      <View style={[s.bdBarFill, { width: `${llPct}%` as any, backgroundColor: colors.accent.yellow }]} />
+                    </View>
+                  </View>
+                  <View style={s.bdMeta}>
+                    <Text style={s.bdLabel}>leading</Text>
+                    <View style={s.bdNums}>
+                      <Text style={s.bdYards}>{laneLeaderYards}</Text>
+                      <Text style={s.bdPct}>{Math.round(llPct)}%</Text>
+                    </View>
+                  </View>
+                </View>
+                <View style={s.bdRow}>
+                  <View style={s.bdBarWrap}>
+                    <View style={s.bdBarTrack}>
+                      <View style={[s.bdBarFill, { width: `${notPct}%` as any, backgroundColor: "rgba(255,255,255,0.15)" }]} />
+                    </View>
+                  </View>
+                  <View style={s.bdMeta}>
+                    <Text style={s.bdLabel}>following</Text>
+                    <View style={s.bdNums}>
+                      <Text style={s.bdYards}>{notLeaderYards}</Text>
+                      <Text style={s.bdPct}>{Math.round(notPct)}%</Text>
+                    </View>
+                  </View>
+                </View>
+              </View>
+            )});
+          }
+
           if (cards.length === 0) return null;
 
           return (
@@ -421,7 +551,15 @@ export default function WorkoutDetail() {
 
         {/* Apple Health Data */}
         {isAvailable() && !healthLoading && healthData && (() => {
-          const avgPace = healthData.distance > 0 && healthData.duration
+          // Active pace: swim time only (rest stripped) / distance
+          const activeSwimTime = processedLaps.length > 0
+            ? processedLaps.reduce((s, l) => s + l.swimTime, 0)
+            : null;
+          const activePace = activeSwimTime != null && healthData.distance > 0
+            ? Math.round((activeSwimTime / healthData.distance) * 100)
+            : null;
+          // Total pace: wall-to-wall duration / distance
+          const totalPace = healthData.distance > 0 && healthData.duration
             ? Math.round((healthData.duration / healthData.distance) * 100)
             : null;
           const strokesPerLap = healthData.totalStrokes != null && healthData.lapCount
@@ -437,16 +575,16 @@ export default function WorkoutDetail() {
                     <Text style={s.wearableLbl}>yards</Text>
                   </View>
                 )}
-                {avgPace != null && (
+                {activePace != null && (
                   <View style={s.wearableItem}>
-                    <Text style={[s.wearableNum, { color: colors.swim[400] }]}>{fmtTime(avgPace)}</Text>
-                    <Text style={s.wearableLbl}>pace /100</Text>
+                    <Text style={[s.wearableNum, { color: colors.swim[400] }]}>{fmtTime(activePace)}</Text>
+                    <Text style={s.wearableLbl}>active /100</Text>
                   </View>
                 )}
-                {healthData.calories > 0 && (
+                {totalPace != null && (
                   <View style={s.wearableItem}>
-                    <Text style={s.wearableNum}>{Math.round(healthData.calories)}</Text>
-                    <Text style={s.wearableLbl}>cal</Text>
+                    <Text style={s.wearableNum}>{fmtTime(totalPace)}</Text>
+                    <Text style={s.wearableLbl}>total /100</Text>
                   </View>
                 )}
                 {healthData.lapCount != null && (
@@ -487,6 +625,99 @@ export default function WorkoutDetail() {
                 )}
               </View>
 
+              {/* Swim vs Rest breakdown */}
+              {processedLaps.length > 0 && lapCorrelations.length > 0 && (() => {
+                // Total swim vs rest from all laps
+                const totalSwim = processedLaps.reduce((s, l) => s + l.swimTime, 0);
+                const totalRest = processedLaps.reduce((s, l) => s + l.restAfter, 0);
+                const swimPct = Math.round((totalSwim / (totalSwim + totalRest)) * 100);
+
+                // Rest between sets: gap between last lap of set N and first lap of set N+1
+                const betweenSetRests: { from: number; to: number; rest: number }[] = [];
+                for (let i = 0; i < lapCorrelations.length - 1; i++) {
+                  const curr = lapCorrelations[i];
+                  const next = lapCorrelations[i + 1];
+                  if (curr.endLap > 0 && next.startLap < processedLaps.length) {
+                    // Sum rest from last lap of current set + any unassigned laps between sets
+                    let betweenRest = 0;
+                    for (let li = curr.endLap - 1; li < next.startLap; li++) {
+                      if (li >= 0 && li < processedLaps.length) {
+                        betweenRest += processedLaps[li].restAfter;
+                        // Unassigned laps between sets count as rest entirely
+                        if (li >= curr.endLap && li < next.startLap) {
+                          betweenRest += processedLaps[li].swimTime;
+                        }
+                      }
+                    }
+                    if (betweenRest > 0) {
+                      betweenSetRests.push({ from: curr.setIndex + 1, to: next.setIndex + 1, rest: betweenRest });
+                    }
+                  }
+                }
+
+                // Average rest between reps within sets
+                const repRests: number[] = [];
+                for (const setCorr of lapCorrelations) {
+                  for (const lineCorr of setCorr.lines) {
+                    for (let ri = 0; ri < lineCorr.reps.length - 1; ri++) {
+                      const rep = lineCorr.reps[ri];
+                      const lastLap = rep.laps[rep.laps.length - 1];
+                      if (lastLap && lastLap.restAfter > 0) {
+                        repRests.push(lastLap.restAfter);
+                      }
+                    }
+                  }
+                }
+                const avgRepRest = repRests.length > 0
+                  ? Math.round(repRests.reduce((s, r) => s + r, 0) / repRests.length)
+                  : null;
+
+                return (
+                  <View style={s.swimRestSection}>
+                    {/* Swim/rest bar */}
+                    <View style={s.swimRestBarRow}>
+                      <Text style={s.swimRestLabel}>swim</Text>
+                      <View style={s.swimRestBarTrack}>
+                        <View style={[s.swimRestBarSwim, { flex: totalSwim }]} />
+                        <View style={[s.swimRestBarRest, { flex: totalRest }]} />
+                      </View>
+                      <Text style={s.swimRestLabel}>rest</Text>
+                    </View>
+                    <View style={s.swimRestNums}>
+                      <Text style={s.swimRestTime}>{fmtTime(Math.round(totalSwim))}</Text>
+                      <Text style={s.swimRestPct}>{swimPct}% active</Text>
+                      <Text style={s.swimRestTime}>{fmtTime(Math.round(totalRest))}</Text>
+                    </View>
+
+                    {/* Between-set rests */}
+                    {betweenSetRests.length > 0 && (
+                      <View style={s.betweenSetRests}>
+                        <Text style={s.restSubLabel}>BETWEEN SETS</Text>
+                        <View style={s.betweenSetTimeline}>
+                          <Text style={s.betweenSetDot}>S{betweenSetRests[0].from}</Text>
+                          {betweenSetRests.map((r, i) => (
+                            <View key={i} style={s.betweenSetSegment}>
+                              <View style={s.betweenSetLine} />
+                              <Text style={s.betweenSetTime}>{fmtTime(Math.round(r.rest))}</Text>
+                              <View style={s.betweenSetLine} />
+                              <Text style={s.betweenSetDot}>S{r.to}</Text>
+                            </View>
+                          ))}
+                        </View>
+                      </View>
+                    )}
+
+                    {/* Avg rep rest */}
+                    {avgRepRest != null && (
+                      <View style={s.avgRepRestRow}>
+                        <Text style={s.restSubLabel}>AVG REST BETWEEN REPS</Text>
+                        <Text style={s.avgRepRestTime}>{avgRepRest < 60 ? `:${avgRepRest.toString().padStart(2, "0")}` : fmtTime(avgRepRest)}</Text>
+                      </View>
+                    )}
+                  </View>
+                );
+              })()}
+
               {(healthData.avgHeartRate != null || healthData.maxHeartRate != null || healthData.restingHeartRate != null) && (
                 <View style={s.hrLine}>
                   {healthData.avgHeartRate != null && (
@@ -518,9 +749,66 @@ export default function WorkoutDetail() {
                   <HeartRateChart
                     samples={healthData.hrSamples}
                     restingHR={healthData.restingHeartRate ?? undefined}
+                    setMarkers={healthData.laps && lapCorrelations.length > 0 ? lapCorrelations.map((c) => {
+                      const startLap = healthData.laps![c.startLap];
+                      const endLap = healthData.laps![Math.min(c.endLap - 1, healthData.laps!.length - 1)];
+                      if (!startLap || !endLap) return null;
+                      return { label: `S${c.setIndex + 1}`, startTime: startLap.startTime, endTime: endLap.endTime };
+                    }).filter(Boolean) as { label: string; startTime: number; endTime: number }[] : undefined}
                   />
                 </>
               )}
+
+              {/* Raw lap timeline */}
+              {processedLaps.length > 0 && (
+                <>
+                  <Pressable onPress={() => setShowLapTimeline(!showLapTimeline)}>
+                    <Text style={s.lapTimelineToggle}>
+                      {showLapTimeline ? "Hide" : "Show"} watch laps ({processedLaps.length})
+                      <Text style={{ fontSize: 10 }}> {showLapTimeline ? "▲" : "▼"}</Text>
+                    </Text>
+                  </Pressable>
+
+                  {showLapTimeline && (
+                    <View style={s.lapTimeline}>
+                      {processedLaps.map((lap, i) => {
+                        // Find which set owns this lap
+                        const ownerCorr = lapCorrelations.find((c) => i >= c.startLap && i < c.endLap);
+                        const setLabel = ownerCorr != null ? `S${ownerCorr.setIndex + 1}` : null;
+                        const isFirst = ownerCorr != null && i === ownerCorr.startLap;
+                        return (
+                          <View key={i} style={[s.lapTimelineItem, !setLabel && s.lapTimelineSkipped]}>
+                            <Text style={s.lapTimelineIdx}>{i + 1}</Text>
+                            {isFirst ? (
+                              <Text style={s.lapTimelineSetLabel}>{setLabel}</Text>
+                            ) : (
+                              <Text style={s.lapTimelineSetLabel}>{setLabel ? "" : "—"}</Text>
+                            )}
+                            <View style={s.lapTimelineBar}>
+                              <View style={[
+                                s.lapTimelineSwim,
+                                { flex: lap.swimTime },
+                                !setLabel && { backgroundColor: "rgba(255,255,255,0.1)" },
+                              ]} />
+                              {lap.restAfter > 0 && (
+                                <View style={[s.lapTimelineRest, { flex: lap.restAfter }]} />
+                              )}
+                            </View>
+                            <Text style={s.lapTimelineTime}>{fmtTime(Math.round(lap.swimTime))}</Text>
+                            {lap.restAfter >= 1 && (
+                              <Text style={s.lapTimelineRestText}>+{Math.round(lap.restAfter)}r</Text>
+                            )}
+                            <Text style={s.lapTimelineStroke}>
+                              {lap.strokeStyle.slice(0, 4)}
+                            </Text>
+                          </View>
+                        );
+                      })}
+                    </View>
+                  )}
+                </>
+              )}
+
               <View style={s.divider} />
             </>
           );
@@ -755,8 +1043,58 @@ export default function WorkoutDetail() {
                     <Text style={s.setCardCum}>{yardsBefore} in</Text>
                   )}
                 </View>
+                {/* Per-set avg HR from watch */}
+                {(() => {
+                  const setCorr = lapCorrelations.find((c) => c.setIndex === setIdx);
+                  if (!setCorr || !healthData?.hrSamples || !healthData.laps) return null;
+                  const startLap = healthData.laps[setCorr.startLap];
+                  const endLap = healthData.laps[Math.min(setCorr.endLap - 1, healthData.laps.length - 1)];
+                  if (!startLap || !endLap) return null;
+                  const tStart = startLap.startTime;
+                  const tEnd = endLap.endTime;
+                  const inRange = healthData.hrSamples.filter((s) => s.t >= tStart && s.t <= tEnd);
+                  if (inRange.length === 0) return null;
+                  const avg = Math.round(inRange.reduce((s, h) => s + h.bpm, 0) / inRange.length);
+                  return (
+                    <View style={s.setCardHr}>
+                      <FontAwesome name="heartbeat" size={10} color={colors.accent.red} />
+                      <Text style={s.setCardHrText}>{avg}</Text>
+                    </View>
+                  );
+                })()}
                 {setYards > 0 && <Text style={s.setCardYards}>{setYards}</Text>}
               </View>
+              {/* Per-set lap alignment */}
+              {processedLaps.length > 0 && (() => {
+                const setCorr = lapCorrelations.find((c) => c.setIndex === setIdx);
+                if (!setCorr) return null;
+                const hasOverride = set.id in setLapStarts;
+                const poolLen = workout.pool_length || 25;
+                const needed = lapsNeededForSet(set, processedLaps[0]?.distanceYards || poolLen);
+                return (
+                  <View style={s.setLapAlign}>
+                    <Text style={s.setLapAlignLabel}>
+                      laps {setCorr.startLap + 1}–{setCorr.endLap}
+                      {needed !== setCorr.endLap - setCorr.startLap && (
+                        <Text style={{ color: colors.accent.yellow }}> (expected {needed})</Text>
+                      )}
+                    </Text>
+                    <View style={s.setLapAlignControls}>
+                      <Pressable onPress={() => adjustSetStart(set.id, -1)} hitSlop={10} style={s.lapAlignBtn}>
+                        <FontAwesome name="minus" size={9} color={colors.swim[400]} />
+                      </Pressable>
+                      <Pressable onPress={() => adjustSetStart(set.id, 1)} hitSlop={10} style={s.lapAlignBtn}>
+                        <FontAwesome name="plus" size={9} color={colors.swim[400]} />
+                      </Pressable>
+                      {hasOverride && (
+                        <Pressable onPress={() => resetSetStart(set.id)} hitSlop={10}>
+                          <Text style={s.lapAlignReset}>reset</Text>
+                        </Pressable>
+                      )}
+                    </View>
+                  </View>
+                );
+              })()}
               {(set.groups || []).map((group, gi) => (
                 <View key={group.id} style={gi > 0 ? s.groupDivider : undefined}>
                   {(group.rounds || 1) > 1 && (
@@ -787,7 +1125,7 @@ export default function WorkoutDetail() {
                 if (wl.mode && wl.mode !== "swim") tags.push(wl.mode);
                 if (wl.effort) tags.push(wl.effort);
                 if (wl.modifiers) tags.push(...wl.modifiers.map((m) => m.replace("_", " ")));
-                if (wl.equipment) tags.push(...wl.equipment);
+                if (wl.equipment) tags.push(...wl.equipment.map((e) => e.replace(/_/g, " ")));
                 if (wl.breathing) {
                   if (wl.breathing.type === "none") tags.push("no breath");
                   else if (wl.breathing.type === "every_n") tags.push(`breathe every ${wl.breathing.value}`);
@@ -893,6 +1231,37 @@ export default function WorkoutDetail() {
                       </View>
                     )}
 
+                    {/* Watch pace per rep */}
+                    {(() => {
+                      const setCorr = lapCorrelations.find((c) => c.setIndex === setIdx);
+                      const lineCorr = setCorr?.lines.find((l) => l.lineId === wl.id);
+                      if (!lineCorr || lineCorr.reps.length === 0) return null;
+                      return (
+                        <View style={s.watchPaceRow}>
+                          <Text style={s.watchPaceIcon}>{"\uF8FF"}</Text>
+                          <View style={s.watchPaceBadges}>
+                            {lineCorr.reps.map((rep) => (
+                              <View key={rep.repIndex} style={s.watchPaceBadge}>
+                                <Text style={s.watchPaceTime}>
+                                  {fmtTime(Math.round(rep.swimTimeSeconds))}
+                                </Text>
+                                {wl.distance >= 100 && (
+                                  <Text style={s.watchPacePer100}>
+                                    {fmtTime(Math.round(rep.pacePer100))}/100
+                                  </Text>
+                                )}
+                                {rep.strokeCount != null && (
+                                  <Text style={s.watchPaceStrokes}>
+                                    {rep.strokeCount}st
+                                  </Text>
+                                )}
+                              </View>
+                            ))}
+                          </View>
+                        </View>
+                      );
+                    })()}
+
                     {hasRepDetails && wl.reps > 1 &&
                       set.rep_details.slice(lineStart, lineStart + wl.reps).map((rep, localRi) => {
                         if (!rep) return null;
@@ -996,10 +1365,9 @@ const s = StyleSheet.create({
   scroll: { flex: 1, backgroundColor: colors.bg },
   container: { paddingHorizontal: 20, paddingTop: 20, paddingBottom: 40 },
   dateNav: {
-    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 16,
-    marginBottom: 8,
+    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 12,
   },
-  dateText: { fontSize: 13, fontWeight: "500", color: "rgba(255,255,255,0.55)", letterSpacing: 0.5, width: 200, textAlign: "center" },
+  dateText: { fontSize: 14, fontWeight: "600", color: "rgba(255,255,255,0.7)", textAlign: "center" },
   heroNum: {
     fontSize: 64, fontWeight: "800", color: colors.white, textAlign: "center",
     letterSpacing: -2, lineHeight: 68,
@@ -1071,6 +1439,8 @@ const s = StyleSheet.create({
   },
   setCardNum: { fontSize: 11, color: colors.swim[400], fontWeight: "700", letterSpacing: 0.5 },
   setCardCum: { fontSize: 10, color: colors.muted, fontWeight: "600", marginTop: 2 },
+  setCardHr: { flexDirection: "row", alignItems: "center", gap: 4 },
+  setCardHrText: { fontSize: 13, fontWeight: "700", color: colors.accent.red },
   setCardYards: { fontSize: 15, color: colors.white, fontWeight: "800" },
   setRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   setText: { fontSize: 17, fontWeight: "700", color: colors.white },
@@ -1098,6 +1468,87 @@ const s = StyleSheet.create({
     marginRight: 4, marginBottom: 2, borderLeftWidth: 2, borderLeftColor: colors.swim[500],
   },
   actualText: { fontSize: 12, fontWeight: "700", color: colors.white },
+  swimRestSection: { marginTop: 12, marginBottom: 12 },
+  swimRestBarRow: {
+    flexDirection: "row", alignItems: "center", gap: 6,
+  },
+  swimRestLabel: { fontSize: 9, fontWeight: "700", color: "rgba(255,255,255,0.35)", textTransform: "uppercase", letterSpacing: 0.5 },
+  swimRestBarTrack: {
+    flex: 1, flexDirection: "row", height: 8, borderRadius: 4, overflow: "hidden",
+  },
+  swimRestBarSwim: { backgroundColor: colors.swim[500], borderRadius: 4 },
+  swimRestBarRest: { backgroundColor: "rgba(255,255,255,0.1)", borderRadius: 4 },
+  swimRestNums: {
+    flexDirection: "row", justifyContent: "space-between", alignItems: "baseline",
+    marginTop: 6, paddingHorizontal: 36,
+  },
+  swimRestTime: { fontSize: 16, fontWeight: "700", color: colors.white },
+  swimRestPct: { fontSize: 12, fontWeight: "600", color: "rgba(255,255,255,0.4)" },
+  betweenSetRests: { marginTop: 14 },
+  restSubLabel: {
+    fontSize: 9, fontWeight: "700", color: "rgba(255,255,255,0.3)",
+    letterSpacing: 1.5, marginBottom: 6,
+  },
+  betweenSetTimeline: {
+    flexDirection: "row", alignItems: "center", flexWrap: "wrap",
+  },
+  betweenSetSegment: { flexDirection: "row", alignItems: "center" },
+  betweenSetLine: { width: 8, height: 1, backgroundColor: "rgba(255,255,255,0.15)" },
+  betweenSetTime: { fontSize: 12, fontWeight: "700", color: colors.swim[400], marginHorizontal: 2 },
+  betweenSetDot: { fontSize: 11, fontWeight: "700", color: "rgba(255,255,255,0.5)" },
+  avgRepRestRow: {
+    flexDirection: "row", justifyContent: "space-between", alignItems: "center",
+    marginTop: 14,
+  },
+  avgRepRestTime: { fontSize: 16, fontWeight: "700", color: colors.white },
+  setLapAlign: {
+    flexDirection: "row", justifyContent: "space-between", alignItems: "center",
+    paddingBottom: 8, marginBottom: 4,
+    borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.04)",
+  },
+  setLapAlignLabel: { fontSize: 10, fontWeight: "600", color: colors.muted },
+  setLapAlignControls: { flexDirection: "row", alignItems: "center", gap: 6 },
+  lapAlignBtn: {
+    width: 24, height: 24, borderRadius: 12,
+    backgroundColor: colors.surfaceLight, alignItems: "center", justifyContent: "center",
+  },
+  lapAlignReset: { fontSize: 10, fontWeight: "600", color: colors.swim[500], marginLeft: 2 },
+  lapTimelineToggle: {
+    fontSize: 12, fontWeight: "600", color: colors.swim[400],
+    textAlign: "center", paddingVertical: 8,
+  },
+  lapTimeline: {
+    backgroundColor: colors.surface, borderRadius: 12, padding: 10,
+    borderWidth: 1, borderColor: colors.border, marginBottom: 12,
+  },
+  lapTimelineItem: {
+    flexDirection: "row", alignItems: "center", paddingVertical: 3,
+  },
+  lapTimelineSkipped: { opacity: 0.35 },
+  lapTimelineIdx: { fontSize: 10, fontWeight: "700", color: colors.muted, width: 22, textAlign: "right", marginRight: 4 },
+  lapTimelineSetLabel: { fontSize: 9, fontWeight: "700", color: colors.swim[400], width: 20, textAlign: "center", marginRight: 4 },
+  lapTimelineBar: { flex: 1, flexDirection: "row", height: 6, borderRadius: 3, overflow: "hidden", marginRight: 6 },
+  lapTimelineSwim: { backgroundColor: colors.swim[500], borderRadius: 3 },
+  lapTimelineRest: { backgroundColor: "rgba(255,255,255,0.08)", borderRadius: 3 },
+  lapTimelineTime: { fontSize: 11, fontWeight: "700", color: colors.white, width: 32, textAlign: "right" },
+  lapTimelineRestText: { fontSize: 10, fontWeight: "500", color: colors.muted, width: 28, textAlign: "right" },
+  lapTimelineStroke: { fontSize: 10, fontWeight: "500", color: "rgba(255,255,255,0.3)", width: 30, textAlign: "right" },
+  watchPaceRow: {
+    flexDirection: "row", alignItems: "flex-start", marginTop: 6, paddingTop: 6,
+    borderTopWidth: 1, borderTopColor: "rgba(255,255,255,0.04)",
+  },
+  watchPaceIcon: { fontSize: 11, color: colors.muted, marginRight: 5, marginTop: 1 },
+  watchPaceBadges: { flexDirection: "row", flexWrap: "wrap", flex: 1 },
+  watchPaceBadge: {
+    flexDirection: "row", alignItems: "baseline",
+    backgroundColor: "rgba(56,189,248,0.08)", borderRadius: 6,
+    paddingHorizontal: 7, paddingVertical: 3,
+    marginRight: 4, marginBottom: 3,
+    borderLeftWidth: 2, borderLeftColor: colors.swim[500],
+  },
+  watchPaceTime: { fontSize: 12, fontWeight: "700", color: colors.swim[400] },
+  watchPacePer100: { fontSize: 10, fontWeight: "600", color: "rgba(255,255,255,0.35)", marginLeft: 4 },
+  watchPaceStrokes: { fontSize: 10, fontWeight: "600", color: "rgba(255,255,255,0.3)", marginLeft: 4 },
   breakdownPager: { marginHorizontal: -20 },
   breakdownPage: { width: Dimensions.get("window").width, paddingHorizontal: 20 },
   pageDots: { flexDirection: "row", justifyContent: "center", marginTop: 12 },

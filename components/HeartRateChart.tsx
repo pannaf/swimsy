@@ -1,5 +1,8 @@
+import React from "react";
 import { View, Text, StyleSheet, Dimensions } from "react-native";
-import Svg, { Polyline, Rect, Line, Text as SvgText } from "react-native-svg";
+import Svg, {
+  Path, Line, Text as SvgText, Defs, LinearGradient, Stop, ClipPath, Rect,
+} from "react-native-svg";
 import { colors } from "../lib/theme";
 
 const ZONE_COLORS = [
@@ -11,15 +14,14 @@ const ZONE_COLORS = [
   colors.accent.red, // 5
 ];
 
-// Karvonen zone boundaries using heart rate reserve
 function getZoneBoundaries(maxHR: number, restHR: number): number[] {
   const hrr = maxHR - restHR;
   return [
-    Math.round(hrr * 0.50 + restHR), // zone 0/1 boundary
-    Math.round(hrr * 0.60 + restHR), // zone 1/2
-    Math.round(hrr * 0.70 + restHR), // zone 2/3
-    Math.round(hrr * 0.80 + restHR), // zone 3/4
-    Math.round(hrr * 0.90 + restHR), // zone 4/5
+    Math.round(hrr * 0.50 + restHR),
+    Math.round(hrr * 0.60 + restHR),
+    Math.round(hrr * 0.70 + restHR),
+    Math.round(hrr * 0.80 + restHR),
+    Math.round(hrr * 0.90 + restHR),
   ];
 }
 
@@ -39,8 +41,13 @@ function fmtDur(ms: number): string {
 }
 
 function fmtMin(sec: number): string {
-  const m = Math.floor(sec / 60);
-  return `${m}m`;
+  return `${Math.floor(sec / 60)}m`;
+}
+
+export interface SetMarker {
+  label: string;
+  startTime: number;
+  endTime: number;
 }
 
 interface Props {
@@ -48,116 +55,212 @@ interface Props {
   maxHR?: number;
   restingHR?: number;
   age?: number;
+  setMarkers?: SetMarker[];
 }
 
-export default function HeartRateChart({ samples, maxHR: maxHRProp, restingHR: restHRProp, age }: Props) {
+export default function HeartRateChart({ samples, maxHR: maxHRProp, restingHR: restHRProp, age, setMarkers }: Props) {
   if (!samples || samples.length < 2) return null;
 
   const width = Dimensions.get("window").width - 40;
-  const chartHeight = 120;
-  const padding = { top: 16, bottom: 24, left: 0, right: 0 };
+  const chartHeight = 160;
+  const hasMarkers = setMarkers && setMarkers.length > 0;
+  const padding = { top: hasMarkers ? 26 : 20, bottom: 28, left: 32, right: 8 };
   const plotW = width - padding.left - padding.right;
   const plotH = chartHeight - padding.top - padding.bottom;
 
   const observedMax = Math.max(...samples.map((s) => s.bpm));
-  const estimatedMax = age ? 220 - age : 182; // default to age 38
+  const observedMin = Math.min(...samples.map((s) => s.bpm));
+  const estimatedMax = age ? 220 - age : 182;
   const maxHR = maxHRProp || Math.max(observedMax, estimatedMax);
-  const restHR = restHRProp || 48; // sensible default
+  const restHR = restHRProp || 48;
   const zoneBounds = getZoneBoundaries(maxHR, restHR);
-  const minHR = Math.min(...samples.map((s) => s.bpm));
+
+  // HR range with padding
+  const hrTop = Math.max(observedMax + 5, zoneBounds[4] + 5);
+  const hrBottom = Math.max(40, observedMin - 10);
+  const hrRange = hrTop - hrBottom || 1;
+
   const maxT = samples[samples.length - 1].t;
   const minT = samples[0].t;
   const tRange = maxT - minT || 1;
-  const hrRange = maxHR - minHR || 1;
-  const hrPad = hrRange * 0.1;
 
-  // Build polyline points and zone-colored vertical bars
   const toX = (t: number) => padding.left + ((t - minT) / tRange) * plotW;
-  const toY = (bpm: number) => padding.top + (1 - (bpm - (minHR - hrPad)) / (hrRange + hrPad * 2)) * plotH;
+  const toY = (bpm: number) => padding.top + (1 - (bpm - hrBottom) / hrRange) * plotH;
 
-  const points = samples.map((s) => `${toX(s.t)},${toY(s.bpm)}`).join(" ");
-
-  // Zone-colored bars (thin vertical rects for each sample interval)
-  const bars: { x: number; w: number; color: string }[] = [];
-  for (let i = 0; i < samples.length - 1; i++) {
-    const x = toX(samples[i].t);
-    const nextX = toX(samples[i + 1].t);
-    const w = nextX - x;
-    if (w > 0 && w < plotW * 0.1) { // skip gaps
-      const zone = getZone(samples[i].bpm, zoneBounds);
-      bars.push({ x, w, color: ZONE_COLORS[zone] });
-    }
+  // Downsample if too many points (keep it smooth but performant)
+  const maxPoints = 200;
+  let displaySamples = samples;
+  if (samples.length > maxPoints) {
+    const step = Math.ceil(samples.length / maxPoints);
+    displaySamples = samples.filter((_, i) => i % step === 0 || i === samples.length - 1);
   }
+
+  // Build smooth path using cardinal spline approximation
+  const pts = displaySamples.map((s) => ({ x: toX(s.t), y: toY(s.bpm) }));
+  let linePath = `M${pts[0].x},${pts[0].y}`;
+  for (let i = 1; i < pts.length; i++) {
+    const prev = pts[i - 1];
+    const curr = pts[i];
+    const cpx = (prev.x + curr.x) / 2;
+    linePath += ` C${cpx},${prev.y} ${cpx},${curr.y} ${curr.x},${curr.y}`;
+  }
+
+  // Filled area path (close down to bottom)
+  const areaPath = linePath +
+    ` L${pts[pts.length - 1].x},${padding.top + plotH}` +
+    ` L${pts[0].x},${padding.top + plotH} Z`;
+
+  // Zone boundary lines (horizontal)
+  const zoneLines = zoneBounds
+    .filter((b) => b > hrBottom && b < hrTop)
+    .map((b) => ({ y: toY(b), bpm: b, zone: getZone(b, zoneBounds) }));
 
   // Time axis labels
   const timeLabels: { t: number; label: string }[] = [];
-  const interval = tRange > 3600 ? 900 : tRange > 1800 ? 600 : 300; // 15m, 10m, or 5m
+  const interval = tRange > 3600 ? 900 : tRange > 1800 ? 600 : 300;
   for (let t = Math.ceil(minT / interval) * interval; t <= maxT; t += interval) {
     timeLabels.push({ t, label: fmtMin(t) });
   }
 
-  // Compute zone durations from samples
+  // HR axis labels
+  const hrLabels: number[] = [];
+  const hrStep = hrRange > 80 ? 20 : hrRange > 40 ? 10 : 5;
+  for (let hr = Math.ceil(hrBottom / hrStep) * hrStep; hr <= hrTop; hr += hrStep) {
+    hrLabels.push(hr);
+  }
+
+  // Zone durations
   const zoneMilli: number[] = [0, 0, 0, 0, 0, 0];
   for (let i = 0; i < samples.length - 1; i++) {
     const dur = (samples[i + 1].t - samples[i].t) * 1000;
     if (dur > 0 && dur < 60000) {
-      const zone = getZone(samples[i].bpm, zoneBounds);
-      zoneMilli[zone] += dur;
+      zoneMilli[getZone(samples[i].bpm, zoneBounds)] += dur;
     }
   }
   const totalMilli = zoneMilli.reduce((a, b) => a + b, 0);
 
   const zoneData = [
     { label: "5", bpm: `${zoneBounds[4]}+`, color: ZONE_COLORS[5] },
-    { label: "4", bpm: `${zoneBounds[3]}-${zoneBounds[4]}`, color: ZONE_COLORS[4] },
-    { label: "3", bpm: `${zoneBounds[2]}-${zoneBounds[3]}`, color: ZONE_COLORS[3] },
-    { label: "2", bpm: `${zoneBounds[1]}-${zoneBounds[2]}`, color: ZONE_COLORS[2] },
-    { label: "1", bpm: `${zoneBounds[0]}-${zoneBounds[1]}`, color: ZONE_COLORS[1] },
+    { label: "4", bpm: `${zoneBounds[3]}–${zoneBounds[4]}`, color: ZONE_COLORS[4] },
+    { label: "3", bpm: `${zoneBounds[2]}–${zoneBounds[3]}`, color: ZONE_COLORS[3] },
+    { label: "2", bpm: `${zoneBounds[1]}–${zoneBounds[2]}`, color: ZONE_COLORS[2] },
+    { label: "1", bpm: `${zoneBounds[0]}–${zoneBounds[1]}`, color: ZONE_COLORS[1] },
     { label: "0", bpm: `<${zoneBounds[0]}`, color: ZONE_COLORS[0] },
   ];
 
   return (
     <View style={s.container}>
-      {/* Chart */}
-      <View style={s.chartWrap}>
-        <Text style={s.chartMax}>{maxHR}</Text>
-        <Svg width={width} height={chartHeight}>
-          {/* Zone-colored background bars */}
-          {bars.map((bar, i) => (
-            <Rect
-              key={i}
-              x={bar.x}
-              y={padding.top}
-              width={Math.max(bar.w, 1)}
-              height={plotH}
-              fill={bar.color}
-              opacity={0.25}
-            />
-          ))}
-          {/* HR line */}
-          <Polyline
-            points={points}
-            fill="none"
-            stroke="white"
-            strokeWidth={1.5}
-            strokeLinejoin="round"
+      <Svg width={width} height={chartHeight}>
+        <Defs>
+          <LinearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
+            <Stop offset="0" stopColor={colors.accent.red} stopOpacity="0.35" />
+            <Stop offset="0.5" stopColor={colors.swim[500]} stopOpacity="0.15" />
+            <Stop offset="1" stopColor={colors.swim[500]} stopOpacity="0" />
+          </LinearGradient>
+          <ClipPath id="plotClip">
+            <Rect x={padding.left} y={padding.top} width={plotW} height={plotH} />
+          </ClipPath>
+        </Defs>
+
+        {/* Zone boundary lines */}
+        {zoneLines.map((zl) => (
+          <Line
+            key={zl.bpm}
+            x1={padding.left}
+            y1={zl.y}
+            x2={padding.left + plotW}
+            y2={zl.y}
+            stroke={ZONE_COLORS[zl.zone]}
+            strokeWidth={0.5}
+            strokeDasharray="4,4"
+            opacity={0.3}
           />
-          {/* Time axis */}
-          {timeLabels.map((tl) => (
-            <SvgText
-              key={tl.t}
-              x={toX(tl.t)}
-              y={chartHeight - 4}
-              fontSize={10}
-              fill="rgba(255,255,255,0.3)"
-              textAnchor="middle"
-            >
-              {tl.label}
-            </SvgText>
-          ))}
-        </Svg>
-        <Text style={s.chartMin}>{minHR}</Text>
-      </View>
+        ))}
+
+        {/* Set boundary markers */}
+        {setMarkers && setMarkers.map((m, i) => {
+          const x1 = toX(m.startTime);
+          const x2 = toX(m.endTime);
+          // Shade the set region
+          return (
+            <React.Fragment key={i}>
+              <Rect
+                x={x1}
+                y={padding.top}
+                width={Math.max(x2 - x1, 1)}
+                height={plotH}
+                fill={colors.swim[500]}
+                opacity={0.06}
+              />
+              <Line
+                x1={x1} y1={padding.top - 2} x2={x1} y2={padding.top + plotH}
+                stroke={colors.swim[500]} strokeWidth={1} opacity={0.4}
+              />
+              <Line
+                x1={x2} y1={padding.top - 2} x2={x2} y2={padding.top + plotH}
+                stroke={colors.swim[500]} strokeWidth={1} opacity={0.2}
+              />
+              <SvgText
+                x={x1 + 3}
+                y={padding.top - 4}
+                fontSize={8}
+                fill={colors.swim[400]}
+                fontWeight="700"
+              >
+                {m.label}
+              </SvgText>
+            </React.Fragment>
+          );
+        })}
+
+        {/* Filled area under curve */}
+        <Path
+          d={areaPath}
+          fill="url(#areaGrad)"
+          clipPath="url(#plotClip)"
+        />
+
+        {/* HR line */}
+        <Path
+          d={linePath}
+          fill="none"
+          stroke="white"
+          strokeWidth={2}
+          strokeLinejoin="round"
+          strokeLinecap="round"
+          clipPath="url(#plotClip)"
+        />
+
+        {/* Y-axis labels */}
+        {hrLabels.map((hr) => (
+          <SvgText
+            key={hr}
+            x={padding.left - 6}
+            y={toY(hr) + 3.5}
+            fontSize={9}
+            fill="rgba(255,255,255,0.25)"
+            textAnchor="end"
+            fontWeight="600"
+          >
+            {hr}
+          </SvgText>
+        ))}
+
+        {/* X-axis labels */}
+        {timeLabels.map((tl) => (
+          <SvgText
+            key={tl.t}
+            x={toX(tl.t)}
+            y={chartHeight - 6}
+            fontSize={9}
+            fill="rgba(255,255,255,0.25)"
+            textAnchor="middle"
+            fontWeight="600"
+          >
+            {tl.label}
+          </SvgText>
+        ))}
+      </Svg>
 
       {/* Zone breakdown */}
       <View style={s.zones}>
@@ -165,12 +268,14 @@ export default function HeartRateChart({ samples, maxHR: maxHRProp, restingHR: r
           const idx = 5 - i;
           const ms = zoneMilli[idx];
           const pct = totalMilli > 0 ? Math.round((ms / totalMilli) * 100) : 0;
+          if (pct === 0 && ms < 1000) return null;
           return (
             <View key={z.label} style={s.zoneRow}>
               <Text style={[s.zoneLabel, { color: z.color }]}>{z.label}</Text>
+              <Text style={s.zoneBpm}>{z.bpm}</Text>
               <View style={s.zoneBarOuter}>
                 <View style={s.zoneBarTrack}>
-                  <View style={[s.zoneBarFill, { width: `${pct}%`, backgroundColor: z.color }]} />
+                  <View style={[s.zoneBarFill, { width: `${pct}%` as any, backgroundColor: z.color }]} />
                 </View>
               </View>
               <Text style={s.zonePct}>{pct}%</Text>
@@ -184,26 +289,18 @@ export default function HeartRateChart({ samples, maxHR: maxHRProp, restingHR: r
 }
 
 const s = StyleSheet.create({
-  container: { marginTop: 16 },
-  chartWrap: { marginBottom: 16 },
-  chartMax: {
-    position: "absolute", top: 8, right: 0,
-    fontSize: 10, fontWeight: "600", color: "rgba(255,255,255,0.4)",
-  },
-  chartMin: {
-    position: "absolute", bottom: 20, right: 0,
-    fontSize: 10, fontWeight: "600", color: "rgba(255,255,255,0.4)",
-  },
-  zones: { marginTop: 4 },
+  container: {},
+  zones: { marginTop: 14 },
   zoneRow: {
-    flexDirection: "row", alignItems: "center", marginBottom: 6,
+    flexDirection: "row", alignItems: "center", marginBottom: 5,
   },
-  zoneLabel: { fontSize: 13, fontWeight: "800", width: 18 },
-  zoneBarOuter: { flex: 1, marginHorizontal: 8 },
+  zoneLabel: { fontSize: 12, fontWeight: "800", width: 16 },
+  zoneBpm: { fontSize: 9, fontWeight: "500", color: "rgba(255,255,255,0.2)", width: 48 },
+  zoneBarOuter: { flex: 1, marginHorizontal: 6 },
   zoneBarTrack: {
     height: 6, borderRadius: 3, backgroundColor: "rgba(255,255,255,0.06)", overflow: "hidden",
   },
   zoneBarFill: { height: 6, borderRadius: 3 },
-  zonePct: { fontSize: 13, fontWeight: "700", color: "rgba(255,255,255,0.5)", width: 36, textAlign: "right" },
-  zoneDur: { fontSize: 13, fontWeight: "600", color: colors.white, width: 44, textAlign: "right" },
+  zonePct: { fontSize: 12, fontWeight: "700", color: "rgba(255,255,255,0.45)", width: 32, textAlign: "right" },
+  zoneDur: { fontSize: 12, fontWeight: "600", color: colors.white, width: 40, textAlign: "right" },
 });

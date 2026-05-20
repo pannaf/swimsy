@@ -40,6 +40,7 @@ const MODIFIERS: { label: string; value: LineModifier }[] = [
   { label: "Neg Split", value: "negative_split" },
   { label: "Pos Split", value: "positive_split" },
   { label: "Broken", value: "broken" },
+  { label: "Lane Leader", value: "lane_leader" },
 ];
 
 const EQUIPMENT_OPTIONS: { label: string; value: Equipment }[] = [
@@ -49,6 +50,7 @@ const EQUIPMENT_OPTIONS: { label: string; value: Equipment }[] = [
   { label: "Board", value: "kickboard" },
   { label: "Snorkel", value: "snorkel" },
   { label: "Band", value: "band" },
+  { label: "Drag Suit", value: "drag_suit" },
 ];
 
 const OFFSETS = [-10, -5, 0, 5, 10, 15, 20];
