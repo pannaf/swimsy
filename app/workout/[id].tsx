@@ -7,7 +7,7 @@ import { Effort, WorkLine, SetLine, SwimSet } from "../../lib/types";
 import { colors } from "../../lib/theme";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { isAvailable, requestPermissions, getSwimDataForDate, HealthSwimData } from "../../lib/healthkit";
-import { correlateLapsToSets, separateSwimAndRest, SetCorrelation, LapWithRest, lapsNeededForSet } from "../../lib/lapCorrelation";
+import { correlateLapsToSets, separateSwimAndRest, SetCorrelation, LapWithRest, lapsNeededForSet, SetLapOverride } from "../../lib/lapCorrelation";
 import HeartRateChart from "../../components/HeartRateChart";
 import { isConnected as isWhoopConnected, getDataForDate as getWhoopData, WhoopDayData, ZoneDurations } from "../../lib/whoop";
 
@@ -35,7 +35,7 @@ export default function WorkoutDetail() {
   const [allIds, setAllIds] = useState<string[]>([]);
   const [baseTime100, setBaseTime100] = useState(90);
   const [lapCorrelations, setLapCorrelations] = useState<SetCorrelation[]>([]);
-  const [setLapStarts, setSetLapStarts] = useState<Record<string, number>>({});
+  const [setLapOverrides, setSetLapOverrides] = useState<Record<string, SetLapOverride>>({});
   const [showLapTimeline, setShowLapTimeline] = useState(false);
   const [processedLaps, setProcessedLaps] = useState<LapWithRest[]>([]);
 
@@ -56,11 +56,24 @@ export default function WorkoutDetail() {
     });
   }, [currentId]);
 
-  // Load saved per-set lap starts
+  // Load saved per-set lap overrides
   useEffect(() => {
-    AsyncStorage.getItem(`setLapStarts:${currentId}`).then((v) => {
-      if (v) setSetLapStarts(JSON.parse(v));
-      else setSetLapStarts({});
+    AsyncStorage.getItem(`setLapOverrides:${currentId}`).then((v) => {
+      if (v) {
+        setSetLapOverrides(JSON.parse(v));
+      } else {
+        // Migrate old format
+        AsyncStorage.getItem(`setLapStarts:${currentId}`).then((old) => {
+          if (old) {
+            const starts = JSON.parse(old) as Record<string, number>;
+            const migrated: Record<string, SetLapOverride> = {};
+            for (const [k, v] of Object.entries(starts)) migrated[k] = { start: v };
+            setSetLapOverrides(migrated);
+          } else {
+            setSetLapOverrides({});
+          }
+        });
+      }
     });
   }, [currentId]);
 
@@ -74,33 +87,48 @@ export default function WorkoutDetail() {
         healthData.workoutEvents,
         workout.sets,
         workout.pool_length || 25,
-        setLapStarts
+        setLapOverrides
       );
       setLapCorrelations(corr);
     } else {
       setLapCorrelations([]);
       setProcessedLaps([]);
     }
-  }, [workout, healthData, setLapStarts]);
+  }, [workout, healthData, setLapOverrides]);
 
-  function adjustSetStart(setId: string, delta: number) {
-    const maxLap = processedLaps.length - 1;
+  function adjustSetLap(setId: string, field: 'start' | 'end', delta: number) {
+    const maxLap = processedLaps.length;
     const corr = lapCorrelations.find((c) => {
       const set = workout?.sets?.[c.setIndex];
       return set?.id === setId;
     });
-    const currentStart = corr?.startLap ?? 0;
-    const newStart = Math.max(0, Math.min(maxLap, currentStart + delta));
-    const updated = { ...setLapStarts, [setId]: newStart };
-    setSetLapStarts(updated);
-    AsyncStorage.setItem(`setLapStarts:${currentId}`, JSON.stringify(updated));
+    const current = field === 'start' ? (corr?.startLap ?? 0) : (corr?.endLap ?? 0);
+    const newVal = Math.max(0, Math.min(maxLap, current + delta));
+    const existing = setLapOverrides[setId] || {};
+    const updated = { ...setLapOverrides, [setId]: { ...existing, [field]: newVal } };
+    setSetLapOverrides(updated);
+    AsyncStorage.setItem(`setLapOverrides:${currentId}`, JSON.stringify(updated));
   }
 
-  function resetSetStart(setId: string) {
-    const updated = { ...setLapStarts };
+  /**
+   * Active end time for a set: last lap's startTime + swimTime (rest excluded).
+   * Uses processedLaps which already separate swim from rest.
+   */
+  function setActiveEndTime(
+    setCorr: SetCorrelation,
+    laps: { startTime: number }[],
+    processed: LapWithRest[]
+  ): number {
+    const lastIdx = Math.min(setCorr.endLap - 1, laps.length - 1, processed.length - 1);
+    if (lastIdx < 0) return 0;
+    return laps[lastIdx].startTime + processed[lastIdx].swimTime;
+  }
+
+  function resetSetLaps(setId: string) {
+    const updated = { ...setLapOverrides };
     delete updated[setId];
-    setSetLapStarts(updated);
-    AsyncStorage.setItem(`setLapStarts:${currentId}`, JSON.stringify(updated));
+    setSetLapOverrides(updated);
+    AsyncStorage.setItem(`setLapOverrides:${currentId}`, JSON.stringify(updated));
   }
 
   async function fetchHealthData(date: string) {
@@ -608,27 +636,53 @@ export default function WorkoutDetail() {
 
               {/* Swim vs Rest breakdown */}
               {processedLaps.length > 0 && lapCorrelations.length > 0 && (() => {
-                // Total swim vs rest from all laps
-                const totalSwim = processedLaps.reduce((s, l) => s + l.swimTime, 0);
-                const totalRest = processedLaps.reduce((s, l) => s + l.restAfter, 0);
+                // Active = swimTime of all laps + mid-rep restAfter (wall/turn time)
+                // Rest = only end-of-rep restAfter (actual rest between reps/sets)
+                let totalActive = 0;
+                let totalRest = 0;
+
+                // Build a set of lap indices that are the last lap of a rep
+                const lastLapOfRep = new Set<number>();
+                for (const setCorr of lapCorrelations) {
+                  let lapIdx = setCorr.startLap;
+                  for (const lineCorr of setCorr.lines) {
+                    for (const rep of lineCorr.reps) {
+                      lapIdx += rep.laps.length;
+                      lastLapOfRep.add(lapIdx - 1); // last lap of this rep
+                    }
+                  }
+                }
+
+                for (let i = 0; i < processedLaps.length; i++) {
+                  const lap = processedLaps[i];
+                  totalActive += lap.swimTime;
+                  if (lastLapOfRep.has(i)) {
+                    // Last lap of a rep: restAfter is real rest
+                    totalRest += lap.restAfter;
+                  } else {
+                    // Mid-rep lap: restAfter is wall/turn time = active
+                    totalActive += lap.restAfter;
+                  }
+                }
+
+                const totalSwim = totalActive;
                 const swimPct = Math.round((totalSwim / (totalSwim + totalRest)) * 100);
 
-                // Rest between sets: gap between last lap of set N and first lap of set N+1
+                // Rest between sets
                 const betweenSetRests: { from: number; to: number; rest: number }[] = [];
                 for (let i = 0; i < lapCorrelations.length - 1; i++) {
                   const curr = lapCorrelations[i];
                   const next = lapCorrelations[i + 1];
                   if (curr.endLap > 0 && next.startLap < processedLaps.length) {
-                    // Sum rest from last lap of current set + any unassigned laps between sets
                     let betweenRest = 0;
-                    for (let li = curr.endLap - 1; li < next.startLap; li++) {
-                      if (li >= 0 && li < processedLaps.length) {
-                        betweenRest += processedLaps[li].restAfter;
-                        // Unassigned laps between sets count as rest entirely
-                        if (li >= curr.endLap && li < next.startLap) {
-                          betweenRest += processedLaps[li].swimTime;
-                        }
-                      }
+                    // Rest after last lap of current set
+                    const lastLapIdx = curr.endLap - 1;
+                    if (lastLapIdx >= 0 && lastLapIdx < processedLaps.length) {
+                      betweenRest += processedLaps[lastLapIdx].restAfter;
+                    }
+                    // Any unassigned laps between sets
+                    for (let li = curr.endLap; li < next.startLap && li < processedLaps.length; li++) {
+                      betweenRest += processedLaps[li].swimTime + processedLaps[li].restAfter;
                     }
                     if (betweenRest > 0) {
                       betweenSetRests.push({ from: curr.setIndex + 1, to: next.setIndex + 1, rest: betweenRest });
@@ -636,7 +690,7 @@ export default function WorkoutDetail() {
                   }
                 }
 
-                // Average rest between reps within sets
+                // Average rest between reps within sets (last lap of each rep except last rep of line)
                 const repRests: number[] = [];
                 for (const setCorr of lapCorrelations) {
                   for (const lineCorr of setCorr.lines) {
@@ -730,11 +784,11 @@ export default function WorkoutDetail() {
                   <HeartRateChart
                     samples={healthData.hrSamples}
                     restingHR={healthData.restingHeartRate ?? undefined}
-                    setMarkers={healthData.laps && lapCorrelations.length > 0 ? lapCorrelations.map((c) => {
+                    setMarkers={healthData.laps && lapCorrelations.length > 0 && processedLaps.length > 0 ? lapCorrelations.map((c) => {
                       const startLap = healthData.laps![c.startLap];
-                      const endLap = healthData.laps![Math.min(c.endLap - 1, healthData.laps!.length - 1)];
-                      if (!startLap || !endLap) return null;
-                      return { label: `S${c.setIndex + 1}`, startTime: startLap.startTime, endTime: endLap.endTime };
+                      if (!startLap) return null;
+                      const activeEnd = setActiveEndTime(c, healthData.laps!, processedLaps);
+                      return { label: `S${c.setIndex + 1}`, startTime: startLap.startTime, endTime: activeEnd };
                     }).filter(Boolean) as { label: string; startTime: number; endTime: number }[] : undefined}
                   />
                 </>
@@ -1024,54 +1078,88 @@ export default function WorkoutDetail() {
                     <Text style={s.setCardCum}>{yardsBefore} in</Text>
                   )}
                 </View>
-                {/* Per-set avg HR from watch */}
+                {/* Per-set HR: start / avg active / end */}
                 {(() => {
                   const setCorr = lapCorrelations.find((c) => c.setIndex === setIdx);
-                  if (!setCorr || !healthData?.hrSamples || !healthData.laps) return null;
-                  const startLap = healthData.laps[setCorr.startLap];
-                  const endLap = healthData.laps[Math.min(setCorr.endLap - 1, healthData.laps.length - 1)];
-                  if (!startLap || !endLap) return null;
-                  const tStart = startLap.startTime;
-                  const tEnd = endLap.endTime;
-                  const inRange = healthData.hrSamples.filter((s) => s.t >= tStart && s.t <= tEnd);
-                  if (inRange.length === 0) return null;
-                  const avg = Math.round(inRange.reduce((s, h) => s + h.bpm, 0) / inRange.length);
+                  if (!setCorr || !healthData?.hrSamples || !healthData.laps || healthData.hrSamples.length === 0 || processedLaps.length === 0) return null;
+                  const laps = healthData.laps;
+                  const hrs = healthData.hrSamples;
+                  const firstLap = laps[setCorr.startLap];
+                  if (!firstLap) return null;
+
+                  const tStart = firstLap.startTime;
+                  const activeEnd = setActiveEndTime(setCorr, laps, processedLaps);
+
+                  // Closest HR sample to a given time
+                  const closestHr = (t: number) => {
+                    let best = hrs[0];
+                    let bestDiff = Math.abs(hrs[0].t - t);
+                    for (const h of hrs) {
+                      const d = Math.abs(h.t - t);
+                      if (d < bestDiff) { best = h; bestDiff = d; }
+                    }
+                    return best.bpm;
+                  };
+
+                  const startHr = closestHr(tStart);
+                  const endHr = closestHr(activeEnd);
+
+                  // Avg HR from set start to last lap swim end (including rest between reps)
+                  const activeHrs = hrs.filter((h) => h.t >= tStart && h.t <= activeEnd);
+                  const avgHr = activeHrs.length > 0
+                    ? Math.round(activeHrs.reduce((s, h) => s + h.bpm, 0) / activeHrs.length)
+                    : null;
+
                   return (
                     <View style={s.setCardHr}>
                       <FontAwesome name="heartbeat" size={10} color={colors.accent.red} />
-                      <Text style={s.setCardHrText}>{avg}</Text>
+                      <Text style={s.setCardHrStart}>{startHr}</Text>
+                      {avgHr != null && <Text style={s.setCardHrAvg}>{avgHr}</Text>}
+                      <Text style={s.setCardHrEnd}>{endHr}</Text>
                     </View>
                   );
                 })()}
                 {setYards > 0 && <Text style={s.setCardYards}>{setYards}</Text>}
               </View>
-              {/* Per-set lap alignment */}
+              {/* Per-set lap alignment: start and end */}
               {processedLaps.length > 0 && (() => {
                 const setCorr = lapCorrelations.find((c) => c.setIndex === setIdx);
                 if (!setCorr) return null;
-                const hasOverride = set.id in setLapStarts;
+                const hasOverride = set.id in setLapOverrides;
                 const poolLen = workout.pool_length || 25;
                 const needed = lapsNeededForSet(set, processedLaps[0]?.distanceYards || poolLen);
                 return (
                   <View style={s.setLapAlign}>
-                    <Text style={s.setLapAlignLabel}>
-                      laps {setCorr.startLap + 1}–{setCorr.endLap}
-                      {needed !== setCorr.endLap - setCorr.startLap && (
-                        <Text style={{ color: colors.accent.yellow }}> (expected {needed})</Text>
-                      )}
-                    </Text>
-                    <View style={s.setLapAlignControls}>
-                      <Pressable onPress={() => adjustSetStart(set.id, -1)} hitSlop={10} style={s.lapAlignBtn}>
-                        <FontAwesome name="minus" size={9} color={colors.swim[400]} />
+                    <View style={s.setLapAlignEdge}>
+                      <Pressable onPress={() => adjustSetLap(set.id, 'start', -1)} hitSlop={10} style={s.lapAlignBtn}>
+                        <FontAwesome name="minus" size={8} color={colors.swim[400]} />
                       </Pressable>
-                      <Pressable onPress={() => adjustSetStart(set.id, 1)} hitSlop={10} style={s.lapAlignBtn}>
-                        <FontAwesome name="plus" size={9} color={colors.swim[400]} />
+                      <Text style={s.setLapAlignLabel}>{setCorr.startLap + 1}</Text>
+                      <Pressable onPress={() => adjustSetLap(set.id, 'start', 1)} hitSlop={10} style={s.lapAlignBtn}>
+                        <FontAwesome name="plus" size={8} color={colors.swim[400]} />
                       </Pressable>
+                    </View>
+                    <View style={s.setLapAlignCenter}>
+                      <Text style={s.setLapAlignLabel}>
+                        {setCorr.endLap - setCorr.startLap} laps
+                        {needed !== setCorr.endLap - setCorr.startLap && (
+                          <Text style={{ color: colors.accent.yellow }}> ({needed} exp)</Text>
+                        )}
+                      </Text>
                       {hasOverride && (
-                        <Pressable onPress={() => resetSetStart(set.id)} hitSlop={10}>
+                        <Pressable onPress={() => resetSetLaps(set.id)} hitSlop={10}>
                           <Text style={s.lapAlignReset}>reset</Text>
                         </Pressable>
                       )}
+                    </View>
+                    <View style={s.setLapAlignEdge}>
+                      <Pressable onPress={() => adjustSetLap(set.id, 'end', -1)} hitSlop={10} style={s.lapAlignBtn}>
+                        <FontAwesome name="minus" size={8} color={colors.swim[400]} />
+                      </Pressable>
+                      <Text style={s.setLapAlignLabel}>{setCorr.endLap}</Text>
+                      <Pressable onPress={() => adjustSetLap(set.id, 'end', 1)} hitSlop={10} style={s.lapAlignBtn}>
+                        <FontAwesome name="plus" size={8} color={colors.swim[400]} />
+                      </Pressable>
                     </View>
                   </View>
                 );
@@ -1420,8 +1508,10 @@ const s = StyleSheet.create({
   },
   setCardNum: { fontSize: 11, color: colors.swim[400], fontWeight: "700", letterSpacing: 0.5 },
   setCardCum: { fontSize: 10, color: colors.muted, fontWeight: "600", marginTop: 2 },
-  setCardHr: { flexDirection: "row", alignItems: "center", gap: 4 },
-  setCardHrText: { fontSize: 13, fontWeight: "700", color: colors.accent.red },
+  setCardHr: { flexDirection: "row", alignItems: "center", gap: 3 },
+  setCardHrStart: { fontSize: 11, fontWeight: "600", color: "rgba(255,255,255,0.4)" },
+  setCardHrAvg: { fontSize: 13, fontWeight: "700", color: colors.accent.red },
+  setCardHrEnd: { fontSize: 11, fontWeight: "600", color: "rgba(255,255,255,0.4)" },
   setCardYards: { fontSize: 15, color: colors.white, fontWeight: "800" },
   setRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   setText: { fontSize: 17, fontWeight: "700", color: colors.white },
@@ -1487,8 +1577,9 @@ const s = StyleSheet.create({
     paddingBottom: 8, marginBottom: 4,
     borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.04)",
   },
+  setLapAlignEdge: { flexDirection: "row", alignItems: "center", gap: 4 },
+  setLapAlignCenter: { alignItems: "center", gap: 2 },
   setLapAlignLabel: { fontSize: 10, fontWeight: "600", color: colors.muted },
-  setLapAlignControls: { flexDirection: "row", alignItems: "center", gap: 6 },
   lapAlignBtn: {
     width: 24, height: 24, borderRadius: 12,
     backgroundColor: colors.surfaceLight, alignItems: "center", justifyContent: "center",

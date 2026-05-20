@@ -14,15 +14,8 @@ const ZONE_COLORS = [
   colors.accent.red, // 5
 ];
 
-function getZoneBoundaries(maxHR: number, restHR: number): number[] {
-  const hrr = maxHR - restHR;
-  return [
-    Math.round(hrr * 0.50 + restHR),
-    Math.round(hrr * 0.60 + restHR),
-    Math.round(hrr * 0.70 + restHR),
-    Math.round(hrr * 0.80 + restHR),
-    Math.round(hrr * 0.90 + restHR),
-  ];
+function getZoneBoundaries(): number[] {
+  return [107, 136, 150, 165, 179];
 }
 
 function getZone(bpm: number, bounds: number[]): number {
@@ -73,7 +66,7 @@ export default function HeartRateChart({ samples, maxHR: maxHRProp, restingHR: r
   const estimatedMax = age ? 220 - age : 182;
   const maxHR = maxHRProp || Math.max(observedMax, estimatedMax);
   const restHR = restHRProp || 48;
-  const zoneBounds = getZoneBoundaries(maxHR, restHR);
+  const zoneBounds = getZoneBoundaries();
 
   // HR range with padding
   const hrTop = Math.max(observedMax + 5, zoneBounds[4] + 5);
@@ -140,12 +133,12 @@ export default function HeartRateChart({ samples, maxHR: maxHRProp, restingHR: r
   const totalMilli = zoneMilli.reduce((a, b) => a + b, 0);
 
   const zoneData = [
-    { label: "5", bpm: `${zoneBounds[4]}+`, color: ZONE_COLORS[5] },
-    { label: "4", bpm: `${zoneBounds[3]}–${zoneBounds[4]}`, color: ZONE_COLORS[4] },
-    { label: "3", bpm: `${zoneBounds[2]}–${zoneBounds[3]}`, color: ZONE_COLORS[3] },
-    { label: "2", bpm: `${zoneBounds[1]}–${zoneBounds[2]}`, color: ZONE_COLORS[2] },
-    { label: "1", bpm: `${zoneBounds[0]}–${zoneBounds[1]}`, color: ZONE_COLORS[1] },
-    { label: "0", bpm: `<${zoneBounds[0]}`, color: ZONE_COLORS[0] },
+    { label: "5", bpm: "179+", color: ZONE_COLORS[5] },
+    { label: "4", bpm: "165–178", color: ZONE_COLORS[4] },
+    { label: "3", bpm: "150–164", color: ZONE_COLORS[3] },
+    { label: "2", bpm: "136–149", color: ZONE_COLORS[2] },
+    { label: "1", bpm: "107–135", color: ZONE_COLORS[1] },
+    { label: "0", bpm: "<107", color: ZONE_COLORS[0] },
   ];
 
   return (

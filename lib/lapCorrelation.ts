@@ -218,12 +218,17 @@ export function lapsNeededForSet(set: SwimSet, lapDistance: number): number {
  * Each set can have a manual startLap override via setLapStarts.
  * If not overridden, a set starts where the previous set left off.
  */
+export interface SetLapOverride {
+  start?: number;
+  end?: number;   // exclusive end lap index
+}
+
 export function correlateLapsToSets(
   laps: HealthLap[],
   events: WorkoutEvent[] | null,
   sets: SwimSet[],
   poolLength: number,
-  setLapStarts?: Record<string, number>
+  setLapOverrides?: Record<string, SetLapOverride>
 ): SetCorrelation[] {
   const processedLaps = separateSwimAndRest(laps, events);
   if (processedLaps.length === 0) return [];
@@ -234,11 +239,14 @@ export function correlateLapsToSets(
 
   for (let si = 0; si < sets.length; si++) {
     const set = sets[si];
+    const overrides = setLapOverrides?.[set.id];
 
     // Per-set start override or auto-continue from previous set
-    const override = setLapStarts?.[set.id];
-    let lapIndex = override != null ? override : autoLapIndex;
+    let lapIndex = overrides?.start != null ? overrides.start : autoLapIndex;
     const setStartLap = lapIndex;
+
+    // Per-set end override (exclusive) or auto from distance
+    const endOverride = overrides?.end;
 
     const lineCorrelations: LineCorrelation[] = [];
 
@@ -260,10 +268,16 @@ export function correlateLapsToSets(
           let swolfSum = 0;
           let swolfCount = 0;
 
-          for (let l = 0; l < lapsPerRep && lapIndex < processedLaps.length; l++) {
+          const lapLimit = endOverride != null ? Math.min(processedLaps.length, endOverride) : processedLaps.length;
+          for (let l = 0; l < lapsPerRep && lapIndex < lapLimit; l++) {
             const lap = processedLaps[lapIndex];
             repLaps.push(lap);
+            // Include swim time for all laps, plus wall/turn time
+            // (restAfter) for all laps EXCEPT the final lap of the rep
             repSwimTime += lap.swimTime;
+            if (l < lapsPerRep - 1) {
+              repSwimTime += lap.restAfter;
+            }
             if (lap.strokeCount != null) repStrokes += lap.strokeCount;
             if (lap.swolf != null) { swolfSum += lap.swolf; swolfCount++; }
             lapIndex++;
@@ -291,15 +305,17 @@ export function correlateLapsToSets(
       }
     }
 
+    const setEndLap = endOverride != null ? Math.min(endOverride, lapIndex) : lapIndex;
+
     correlations.push({
       setIndex: si,
       startLap: setStartLap,
-      endLap: lapIndex,
+      endLap: setEndLap,
       lines: lineCorrelations,
     });
 
     // Next auto set starts where this one ended
-    autoLapIndex = lapIndex;
+    autoLapIndex = setEndLap;
   }
 
   return correlations;
