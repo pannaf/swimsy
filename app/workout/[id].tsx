@@ -34,7 +34,6 @@ export default function WorkoutDetail() {
   const [whoopLoading, setWhoopLoading] = useState(false);
   const [allIds, setAllIds] = useState<string[]>([]);
   const [baseTime100, setBaseTime100] = useState(90);
-  const [breakdownPage, setBreakdownPage] = useState(0);
   const [lapCorrelations, setLapCorrelations] = useState<SetCorrelation[]>([]);
   const [setLapStarts, setSetLapStarts] = useState<Record<string, number>>({});
   const [showLapTimeline, setShowLapTimeline] = useState(false);
@@ -523,28 +522,10 @@ export default function WorkoutDetail() {
           if (cards.length === 0) return null;
 
           return (
-            <View style={{ marginBottom: 24 }}>
-              <ScrollView
-                horizontal
-                pagingEnabled
-                showsHorizontalScrollIndicator={false}
-                style={s.breakdownPager}
-                onMomentumScrollEnd={(e) => {
-                  const page = Math.round(e.nativeEvent.contentOffset.x / Dimensions.get("window").width);
-                  setBreakdownPage(page);
-                }}
-              >
-                {cards.map((c) => (
-                  <View key={c.key} style={s.breakdownPage}>{c.node}</View>
-                ))}
-              </ScrollView>
-              {cards.length > 1 && (
-                <View style={s.pageDots}>
-                  {cards.map((c, i) => (
-                    <View key={c.key} style={[s.pageDot, i === breakdownPage && s.pageDotActive]} />
-                  ))}
-                </View>
-              )}
+            <View style={{ marginBottom: 8 }}>
+              {cards.map((c) => (
+                <View key={c.key} style={s.breakdownCard}>{c.node}</View>
+              ))}
             </View>
           );
         })()}
@@ -1549,16 +1530,12 @@ const s = StyleSheet.create({
   watchPaceTime: { fontSize: 12, fontWeight: "700", color: colors.swim[400] },
   watchPacePer100: { fontSize: 10, fontWeight: "600", color: "rgba(255,255,255,0.35)", marginLeft: 4 },
   watchPaceStrokes: { fontSize: 10, fontWeight: "600", color: "rgba(255,255,255,0.3)", marginLeft: 4 },
-  breakdownPager: { marginHorizontal: -20 },
-  breakdownPage: { width: Dimensions.get("window").width, paddingHorizontal: 20 },
-  pageDots: { flexDirection: "row", justifyContent: "center", marginTop: 12 },
-  pageDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: "rgba(255,255,255,0.15)", marginHorizontal: 3 },
-  pageDotActive: { backgroundColor: colors.swim[500] },
+  breakdownCard: { marginBottom: 16 },
   bdTitle: {
     fontSize: 11, fontWeight: "700", color: "rgba(255,255,255,0.4)",
     letterSpacing: 2, textTransform: "uppercase", marginBottom: 20,
   },
-  bdRow: { marginBottom: 20 },
+  bdRow: { marginBottom: 14 },
   bdBarWrap: { marginBottom: 8 },
   bdBarTrack: {
     height: 6, borderRadius: 3, backgroundColor: "rgba(255,255,255,0.06)", overflow: "hidden",
