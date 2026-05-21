@@ -180,6 +180,69 @@ async function apiGet(path: string, params?: Record<string, string>): Promise<an
   return null;
 }
 
+export interface WhoopSwimSummary {
+  date: string;
+  strain: number;
+  durationMinutes: number;
+  calories: number;
+  avgHr: number | null;
+}
+
+/**
+ * Fetch all swim workouts from Whoop in a date range.
+ * Paginates through results automatically.
+ */
+export async function getSwimWorkoutsInRange(
+  startDate: Date,
+  endDate: Date
+): Promise<WhoopSwimSummary[]> {
+  const token = await getAccessToken();
+  if (!token) return [];
+
+  const results: WhoopSwimSummary[] = [];
+  let nextToken: string | null = null;
+  const startISO = startDate.toISOString();
+  const endISO = endDate.toISOString();
+
+  do {
+    const params: Record<string, string> = {
+      start: startISO,
+      end: endISO,
+      limit: "25",
+    };
+    if (nextToken) params.nextToken = nextToken;
+
+    const data = await apiGet("/activity/workout", params);
+    if (!data?.records) break;
+
+    console.log(`[Whoop Range] got ${data.records.length} workouts, next_token: ${data.next_token ?? "none"}`);
+    for (const w of data.records) {
+      // sport_id 33 = Swimming
+      const isSwim = w.sport_id === 33 ||
+        w.sport_name === "swimming" ||
+        w.sport_name?.toLowerCase().includes("swim");
+      if (!isSwim) continue;
+
+      const start = w.start ? new Date(w.start) : null;
+      const end = w.end ? new Date(w.end) : null;
+      const dur = start && end ? (end.getTime() - start.getTime()) / 60000 : 0;
+
+      results.push({
+        date: start?.toISOString().slice(0, 10) || "",
+        strain: w.score?.strain ?? 0,
+        durationMinutes: Math.round(dur),
+        calories: w.score?.kilojoule ? Math.round(w.score.kilojoule / 4.184) : 0,
+        avgHr: w.score?.average_heart_rate ?? null,
+      });
+    }
+
+    // Whoop API may use next_token or nextToken
+    nextToken = data.next_token || data.nextToken || null;
+  } while (nextToken);
+
+  return results;
+}
+
 export async function getDataForDate(date: string): Promise<WhoopDayData | null> {
   const token = await getAccessToken();
   if (!token) return null;

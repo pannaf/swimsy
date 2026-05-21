@@ -1,6 +1,6 @@
 import { View, Text, ScrollView, Image, Pressable, Alert, StyleSheet, Dimensions } from "react-native";
 import { useLocalSearchParams, router, Stack } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import FontAwesome from "@expo/vector-icons/FontAwesome";
 import { getWorkout, getWorkouts, deleteWorkout, getSettings, StoredWorkout } from "../../lib/storage";
 import { Effort, WorkLine, SetLine, SwimSet } from "../../lib/types";
@@ -158,7 +158,7 @@ export default function WorkoutDetail() {
         text: "Delete",
         style: "destructive",
         onPress: async () => {
-          await deleteWorkout(id);
+          await deleteWorkout(currentId);
           router.replace("/(tabs)");
         },
       },
@@ -201,9 +201,8 @@ export default function WorkoutDetail() {
           );
         },
         headerRight: () => (
-          <Pressable onPress={() => router.push(`/(tabs)/log?editId=${currentId}`)} style={{ flexDirection: "row", alignItems: "center" }}>
-            <FontAwesome name="pencil" size={14} color={colors.swim[500]} />
-            <Text style={{ color: colors.swim[500], fontSize: 15, fontWeight: "600", marginLeft: 6 }}>Edit</Text>
+          <Pressable onPress={() => router.push(`/(tabs)/log?editId=${currentId}`)} hitSlop={12}>
+            <FontAwesome name="pencil" size={16} color={colors.swim[500]} />
           </Pressable>
         ),
       }}
@@ -1418,7 +1417,8 @@ export default function WorkoutDetail() {
           </View>
         )}
 
-        {/* Delete */}
+      </View>
+      <View style={s.container}>
         <Pressable style={s.deleteBtn} onPress={handleDelete}>
           <FontAwesome name="trash-o" size={16} color={colors.accent.red} />
           <Text style={s.deleteBtnText}>Delete Workout</Text>
@@ -1457,6 +1457,13 @@ const s = StyleSheet.create({
     fontSize: 10, fontWeight: "600", color: "rgba(255,255,255,0.45)",
     textTransform: "uppercase", letterSpacing: 1.5, marginTop: 2,
   },
+  shareRow: {
+    flexDirection: "row", alignItems: "center", justifyContent: "center",
+    backgroundColor: colors.surface, borderRadius: 18, paddingVertical: 16,
+    borderWidth: 1, borderColor: colors.border, marginBottom: 12,
+    gap: 8,
+  },
+  shareText: { fontSize: 15, fontWeight: "600", color: colors.swim[400] },
   divider: { height: 1, backgroundColor: "rgba(255,255,255,0.06)", marginBottom: 24 },
   wearableGrid: {
     flexDirection: "row", flexWrap: "wrap", marginBottom: 8,
